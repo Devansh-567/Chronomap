@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chronomap"
+version = "2.1.0"
+description = "Enhanced thread-safe, time-versioned key-value store with snapshots, queries, async, and more."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Devansh Singh", email = "devansh.jay.singh@gmail.com"}]
+keywords = ["chronomap", "timestamp", "key-value", "time-series", "snapshot", "async", "rwlock"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 5 - Production/Stable"
+]
+dependencies = []
+optional-dependencies = { pandas = ["pandas"] }
+
+[tool.setuptools.packages.find]
+where = ["."]
+ 
+[project.urls]
+Homepage = "https://github.com/Devansh-567/chronomap"
+Icon = 
