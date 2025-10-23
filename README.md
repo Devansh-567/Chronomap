@@ -1,7 +1,7 @@
 # ChronoMap
 
 <!-- ChronoMap Logo -->
-<img src="logo/logo.png" alt="ChronoMap Logo" width="300"/>
+<img src="https://github.com/Devansh-567/Chronomap/blob/main/logo/logo.png">
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
