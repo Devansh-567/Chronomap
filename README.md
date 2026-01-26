@@ -1,12 +1,15 @@
 # ChronoMap
 
 <!-- ChronoMap Logo -->
-<img src="https://github.com/Devansh-567/Chronomap/blob/main/logo/logo.png">
+<p align="center">
+  <img src="https://chronomap-logo.netlify.app/logo.png" alt="ChronoMap Logo" width="200">
+</p>
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-102%20passed-brightgreen.svg)](tests/)
 [![Open Source Helpers](https://www.codetriage.com/devansh-567/chronomap/badges/users.svg)](https://www.codetriage.com/devansh-567/chronomap)
+
 
 
 **ChronoMap** is a thread-safe, time-versioned key-value store for Python that maintains complete history of all changes. Perfect for configuration management, audit trails, time-series data, session stores, and any application requiring historical data tracking with **concurrency, async, and analytics.**
