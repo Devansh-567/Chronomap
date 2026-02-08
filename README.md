@@ -1055,7 +1055,7 @@ cm.remove_change_callback(my_callback)
 
 ## 🧪 Testing
 
-ChronoMap has **102 comprehensive tests** with **97% code coverage**.
+ChronoMap has **134 comprehensive tests** with **97% code coverage**.
 
 ```bash
 # Run all tests
@@ -1100,7 +1100,7 @@ chronomap/
 │   ├── cli.py                     # CLI interface
 │   └── __main__.py                # Entry point
 ├── tests/
-│   └── test_chronomap.py          # 102 comprehensive tests
+│   └── test_chronomap.py          # 134 comprehensive tests
 ├── examples/
 │   ├── config_manager.py          # Configuration management
 │   ├── session_store.py           # Session storage with TTL
@@ -1194,7 +1194,7 @@ pytest tests/ -v --cov=chronomap
 ## ❓ FAQ
 
 **Q: Is ChronoMap production-ready?**  
-A: Yes! ChronoMap is battle-tested with 102 tests, 97% coverage, and used in production by 25,000+ downloads.
+A: Yes! ChronoMap is battle-tested with 134 tests, 97% coverage, and used in production by 25,000+ downloads.
 
 **Q: How does ChronoMap compare to Redis?**  
 A: ChronoMap is in-memory like Redis but adds native time-travel, snapshots, and temporal queries. Redis requires plugins (RedisTimeSeries) for similar functionality.
