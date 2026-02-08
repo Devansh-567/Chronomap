@@ -20,6 +20,9 @@ from datetime import datetime, timedelta
 import time
 import random
 import hashlib
+import tempfile
+import os
+import json
 
 
 class IntelligentCache:
