@@ -18,6 +18,9 @@ Run this script: python feature_flags.py
 from chronomap import ChronoMap
 from datetime import datetime, timedelta
 import random
+import tempfile
+import os
+import json
 
 
 class FeatureFlagManager:
@@ -436,22 +439,25 @@ def main():
     print("\n\n💾 Step 11: Exporting flag configuration")
     print("-" * 70)
 
-    # Export to JSON for documentation
-    import json
+    # Get temp directory (cross-platform)
+    temp_dir = tempfile.gettempdir()
 
+    # Export to JSON for documentation
     flag_export = {}
     for flag_name in all_flags:
         flag_data = ff.flags.get(flag_name)
         flag_export[flag_name] = flag_data
 
-    with open('/tmp/feature_flags.json', 'w') as f:
+    flags_json_path = os.path.join(temp_dir, 'feature_flags.json')
+    with open(flags_json_path, 'w') as f:
         json.dump(flag_export, f, indent=2)
 
-    print("✅ Flag configuration exported to /tmp/feature_flags.json")
+    print(f"✅ Flag configuration exported to {flags_json_path}")
 
     # Save full history
-    ff.flags.save_pickle('/tmp/feature_flags_history.pkl', compress='lzma')
-    print("✅ Flag history saved to /tmp/feature_flags_history.pkl")
+    flags_pkl_path = os.path.join(temp_dir, 'feature_flags_history.pkl')
+    ff.flags.save_pickle(flags_pkl_path, compress='lzma')
+    print(f"✅ Flag history saved to {flags_pkl_path}")
 
     # ========================================================================
     # Summary
