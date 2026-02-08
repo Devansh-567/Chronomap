@@ -19,6 +19,9 @@ from datetime import datetime, timedelta
 import random
 import time
 import statistics
+import tempfile
+import os
+import json
 
 
 def simulate_cpu_usage():
@@ -306,9 +309,10 @@ def main():
     print("\n\n💾 Step 8: Exporting metrics for external analysis")
     print("-" * 70)
 
-    # Export all metrics to JSON
-    import json
+    # Get temp directory (cross-platform)
+    temp_dir = tempfile.gettempdir()
 
+    # Export all metrics to JSON
     metrics_export = {}
     for metric_name in all_metrics:
         history = metrics.history(metric_name)
@@ -320,14 +324,16 @@ def main():
             for ts, value in history
         ]
 
-    with open('/tmp/metrics_export.json', 'w') as f:
+    metrics_json_path = os.path.join(temp_dir, 'metrics_export.json')
+    with open(metrics_json_path, 'w') as f:
         json.dump(metrics_export, f, indent=2)
 
-    print("✅ Metrics exported to /tmp/metrics_export.json")
+    print(f"✅ Metrics exported to {metrics_json_path}")
 
     # Save ChronoMap with full history
-    metrics.save_pickle('/tmp/metrics_history.pkl', compress='lzma')
-    print("✅ Full metrics history saved to /tmp/metrics_history.pkl")
+    metrics_pkl_path = os.path.join(temp_dir, 'metrics_history.pkl')
+    metrics.save_pickle(metrics_pkl_path, compress='lzma')
+    print(f"✅ Full metrics history saved to {metrics_pkl_path}")
 
     # ========================================================================
     # SCENARIO 9: Pandas Integration (if available)
