@@ -4,25 +4,52 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chronomap"
-version = "2.1.0"
-description = "Enhanced thread-safe, time-versioned key-value store with snapshots, queries, async, and more."
+version = "2.2.0"
+description = "Production-grade thread-safe, time-versioned key-value store with LRU cache, auto-pruning, async support, and advanced performance features"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [{name = "Devansh Singh", email = "devansh.jay.singh@gmail.com"}]
-keywords = ["chronomap", "timestamp", "key-value", "time-series", "snapshot", "async", "rwlock"]
+keywords = [
+    "chronomap",
+    "timestamp",
+    "key-value",
+    "time-series",
+    "snapshot",
+    "async",
+    "rwlock",
+    "lru-cache",
+    "versioning",
+    "database",
+    "performance"
+]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
-    "Development Status :: 5 - Production/Stable"
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = []
-optional-dependencies = { pandas = ["pandas"] }
+
+[project.optional-dependencies]
+pandas = ["pandas>=1.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/Devansh-567/chronomap"
+Documentation = "https://github.com/Devansh-567/chronomap#readme"
+Repository = "https://github.com/Devansh-567/chronomap"
+Issues = "https://github.com/Devansh-567/chronomap/issues"
+
+[project.scripts]
+chronomap = "chronomap.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
- 
-[project.urls]
-Homepage = "https://github.com/Devansh-567/chronomap"
-Icon = 
