@@ -19,6 +19,9 @@ from datetime import datetime, timedelta
 import random
 import string
 import time
+import tempfile
+import os
+import json
 
 
 def generate_session_token(length=32):
@@ -272,6 +275,13 @@ def main():
         time_str = event['timestamp'].strftime('%H:%M:%S')
         user = event['data'].get('username', 'unknown')
         print(f"   [{time_str}] {event['event'].upper()}: {user}")
+
+    # Optional: Export audit trail
+    temp_dir = tempfile.gettempdir()
+    audit_path = os.path.join(temp_dir, 'session_audit.json')
+    with open(audit_path, 'w') as f:
+        json.dump(session_events, f, indent=2, default=str)
+    print(f"\n💾 Audit trail exported to: {audit_path}")
 
     # ========================================================================
     # SCENARIO 9: Session Statistics
