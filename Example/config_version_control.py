@@ -17,6 +17,8 @@ Run this script: python config_version_control.py
 from chronomap import ChronoMap
 from datetime import datetime
 import json
+import tempfile
+import os
 
 
 def main():
@@ -206,15 +208,21 @@ def main():
     print("\n\n💾 Step 9: Exporting configuration to file")
     print("-" * 70)
 
+    # Get temp directory (works on Windows, Linux, macOS)
+    temp_dir = tempfile.gettempdir()
+    config_backup_path = os.path.join(temp_dir, 'config_backup.json')
+    config_history_path = os.path.join(temp_dir, 'config_with_history.pkl')
+
     # Export current configuration to JSON for backup
     current_config = config.latest()
-    with open('/tmp/config_backup.json', 'w') as f:
+    with open(config_backup_path, 'w') as f:
         json.dump(current_config, f, indent=2)
-    print("✅ Configuration exported to /tmp/config_backup.json")
+    print(f"✅ Configuration exported to {config_backup_path}")
 
     # Save complete ChronoMap with history (compressed)
-    config.save_pickle('/tmp/config_with_history.pkl', compress='lzma')
-    print("✅ Full configuration history saved (compressed)")
+    config.save_pickle(config_history_path, compress='lzma')
+    print(f"✅ Full configuration history saved (compressed)")
+    print(f"   Location: {config_history_path}")
 
     # ========================================================================
     # SCENARIO 10: Viewing Audit Log
