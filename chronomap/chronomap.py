@@ -1,7 +1,17 @@
 """
-ChronoMap v2.1.0: Enhanced thread-safe, time-versioned key-value store.
+ChronoMap v2.2.0: Production-grade thread-safe, time-versioned key-value store.
 
-New in v2.1.0:
+New in v2.2.0:
+- Auto-pruning with max_history limits
+- LRU cache for read optimization
+- Background TTL cleanup thread
+- Memory usage monitoring and limits
+- Batch operation optimizations
+- Enhanced compression with multiple algorithms
+- Improved async performance
+- Better memory efficiency
+
+Previous features (v2.1.0):
 - Read-write locks for better concurrency
 - Async support (AsyncChronoMap)
 - Query filters and aggregations
@@ -10,7 +20,6 @@ New in v2.1.0:
 - History garbage collection
 - Context manager for snapshots
 - Export to Pandas DataFrame
-- Compression support
 - Performance benchmarking utilities
 """
 
@@ -23,11 +32,18 @@ import pickle
 import threading
 import math
 import zlib
+import gzip
+import bz2
+import lzma
+import weakref
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, List, Tuple, Dict, Set, Iterator, Union, Callable
 from collections.abc import Mapping
+from collections import OrderedDict
+from functools import wraps
+import time as time_module
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +70,72 @@ class ChronoMapTypeError(ChronoMapError, TypeError):
 class ChronoMapValueError(ChronoMapError, ValueError):
     """Raised when an invalid value is provided."""
     pass
+
+
+class ChronoMapMemoryError(ChronoMapError, MemoryError):
+    """Raised when memory limit is exceeded."""
+    pass
+
+
+# ============================================================================
+# LRU Cache for Read Optimization (NEW in v2.2.0)
+# ============================================================================
+
+class LRUCache:
+    """Thread-safe LRU cache for frequently accessed keys."""
+    
+    def __init__(self, capacity: int = 1000):
+        self.capacity = capacity
+        self.cache: OrderedDict = OrderedDict()
+        self.lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+    
+    def get(self, key: Tuple[Any, float]) -> Optional[Any]:
+        """Get value from cache."""
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                self.hits += 1
+                return self.cache[key]
+            self.misses += 1
+            return None
+    
+    def put(self, key: Tuple[Any, float], value: Any) -> None:
+        """Put value in cache."""
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            self.cache[key] = value
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(last=False)
+    
+    def invalidate(self, store_key: Any) -> None:
+        """Invalidate all cache entries for a store key."""
+        with self.lock:
+            keys_to_remove = [k for k in self.cache.keys() if k[0] == store_key]
+            for k in keys_to_remove:
+                del self.cache[k]
+    
+    def clear(self) -> None:
+        """Clear entire cache."""
+        with self.lock:
+            self.cache.clear()
+            self.hits = 0
+            self.misses = 0
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache statistics."""
+        with self.lock:
+            total = self.hits + self.misses
+            hit_rate = (self.hits / total * 100) if total > 0 else 0
+            return {
+                'hits': self.hits,
+                'misses': self.misses,
+                'size': len(self.cache),
+                'capacity': self.capacity,
+                'hit_rate': round(hit_rate, 2)
+            }
 
 
 # ============================================================================
@@ -133,30 +215,152 @@ class SnapshotContext:
 
 
 # ============================================================================
-# Main ChronoMap Class (Enhanced)
+# Background TTL Cleanup Thread (NEW in v2.2.0)
+# ============================================================================
+
+class TTLCleanupThread:
+    """Background thread for automatic TTL cleanup."""
+    
+    def __init__(self, chronomap_ref: weakref.ref, interval: float = 60.0):
+        self.chronomap_ref = chronomap_ref
+        self.interval = interval
+        self.thread = None
+        self.stop_event = threading.Event()
+        self.cleaned_count = 0
+    
+    def start(self):
+        """Start the cleanup thread."""
+        if self.thread is not None and self.thread.is_alive():
+            return
+        
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self.thread.start()
+        logger.debug("TTL cleanup thread started")
+    
+    def stop(self):
+        """Stop the cleanup thread."""
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+        logger.debug("TTL cleanup thread stopped")
+    
+    def _cleanup_loop(self):
+        """Main cleanup loop."""
+        while not self.stop_event.is_set():
+            try:
+                cm = self.chronomap_ref()
+                if cm is None:
+                    # ChronoMap was garbage collected
+                    break
+                
+                cleaned = cm.clean_expired_keys()
+                self.cleaned_count += cleaned
+                
+                if cleaned > 0:
+                    logger.debug(f"Background cleanup removed {cleaned} expired keys")
+                
+                del cm  # Release reference
+                
+            except Exception as e:
+                logger.error(f"Error in TTL cleanup thread: {e}")
+            
+            # Wait for next interval or stop event
+            self.stop_event.wait(self.interval)
+
+
+# ============================================================================
+# Memory Monitor (NEW in v2.2.0)
+# ============================================================================
+
+class MemoryMonitor:
+    """Monitor and enforce memory limits."""
+    
+    def __init__(self, max_memory_mb: Optional[float] = None):
+        self.max_memory_bytes = int(max_memory_mb * 1024 * 1024) if max_memory_mb else None
+        self.warning_threshold = 0.8  # Warn at 80%
+        self.warned = False
+    
+    def estimate_size(self, obj: Any) -> int:
+        """Estimate memory size of an object."""
+        try:
+            import sys
+            return sys.getsizeof(obj)
+        except:
+            return 0
+    
+    def check_memory(self, store: Dict, ttl: Dict) -> None:
+        """Check if memory limit is exceeded."""
+        if self.max_memory_bytes is None:
+            return
+        
+        # Estimate total size
+        total_size = self.estimate_size(store) + self.estimate_size(ttl)
+        
+        # Check warning threshold
+        if not self.warned and total_size > self.max_memory_bytes * self.warning_threshold:
+            logger.warning(f"Memory usage at {total_size / 1024 / 1024:.2f}MB "
+                         f"({total_size / self.max_memory_bytes * 100:.1f}% of limit)")
+            self.warned = True
+        
+        # Check hard limit
+        if total_size > self.max_memory_bytes:
+            raise ChronoMapMemoryError(
+                f"Memory limit exceeded: {total_size / 1024 / 1024:.2f}MB "
+                f"(limit: {self.max_memory_bytes / 1024 / 1024:.2f}MB)"
+            )
+    
+    def reset_warning(self):
+        """Reset warning flag."""
+        self.warned = False
+
+
+# ============================================================================
+# Main ChronoMap Class (Enhanced v2.2.0)
 # ============================================================================
 
 class ChronoMap:
     """
-    Enhanced thread-safe, time-versioned key-value store.
+    Production-grade thread-safe, time-versioned key-value store.
     
-    New Features in v2.1.0:
-    - Better concurrency with read-write locks
-    - Event hooks for change tracking
+    New Features in v2.2.0:
+    - Auto-pruning with max_history
+    - LRU cache for reads
+    - Background TTL cleanup
+    - Memory limits and monitoring
+    - Batch optimizations
+    - Enhanced compression
+    
+    Features from v2.1.0:
+    - Read-write locks
+    - Event hooks
     - Query filters and aggregations
     - Time travel with datetime strings
-    - History garbage collection
     - Context manager support
-    - Compression
+    - Async support
     """
 
-    def __init__(self, debug: bool = False, use_rwlock: bool = True):
+    def __init__(
+        self, 
+        debug: bool = False, 
+        use_rwlock: bool = True,
+        max_history: Optional[int] = None,
+        cache_size: int = 1000,
+        enable_ttl_cleanup: bool = True,
+        ttl_cleanup_interval: float = 60.0,
+        max_memory_mb: Optional[float] = None
+    ):
         """
         Initialize a ChronoMap.
         
         Args:
             debug: Enable debug logging if True.
             use_rwlock: Use read-write locks for better concurrency.
+            max_history: Maximum versions per key (auto-prune if exceeded).
+            cache_size: LRU cache size for read optimization.
+            enable_ttl_cleanup: Enable background TTL cleanup thread.
+            ttl_cleanup_interval: Seconds between TTL cleanup runs.
+            max_memory_mb: Maximum memory usage in MB (None = no limit).
         """
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
@@ -172,15 +376,32 @@ class ChronoMap:
         self._snapshot_time: Optional[float] = None
         self._debug = debug
         
-        # Event hooks (NEW in v2.1.0)
+        # NEW in v2.2.0: Performance features
+        self._max_history = max_history
+        self._cache = LRUCache(capacity=cache_size) if cache_size > 0 else None
+        self._memory_monitor = MemoryMonitor(max_memory_mb)
+        
+        # TTL cleanup thread
+        self._ttl_cleanup_thread = None
+        if enable_ttl_cleanup:
+            self._ttl_cleanup_thread = TTLCleanupThread(
+                weakref.ref(self),
+                interval=ttl_cleanup_interval
+            )
+            self._ttl_cleanup_thread.start()
+        
+        # Event hooks
         self._change_callbacks: List[Callable] = []
         
-        # Statistics (NEW in v2.1.0)
+        # Statistics
         self._stats = {
             'reads': 0,
             'writes': 0,
             'deletes': 0,
-            'snapshots': 0
+            'snapshots': 0,
+            'auto_prunes': 0,
+            'cache_hits': 0,
+            'cache_misses': 0
         }
 
         if debug:
@@ -191,6 +412,11 @@ class ChronoMap:
                     logging.Formatter("[ChronoMap] %(levelname)s: %(message)s")
                 )
                 logger.addHandler(handler)
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        if hasattr(self, '_ttl_cleanup_thread') and self._ttl_cleanup_thread:
+            self._ttl_cleanup_thread.stop()
 
     def _current_time(self) -> float:
         """Get current UTC timestamp."""
@@ -238,9 +464,31 @@ class ChronoMap:
             if key in self._store:
                 del self._store[key]
             del self._ttl[key]
+            
+            # Invalidate cache
+            if self._cache:
+                self._cache.invalidate(key)
+            
             logger.debug("EXPIRED key=%r", key)
             return True
         return False
+    
+    def _auto_prune(self, key: Any) -> None:
+        """Auto-prune history if max_history exceeded."""
+        if self._max_history is None:
+            return
+        
+        versions = self._store.get(key, [])
+        if len(versions) > self._max_history:
+            removed = len(versions) - self._max_history
+            self._store[key] = versions[-self._max_history:]
+            self._stats['auto_prunes'] += 1
+            
+            # Invalidate cache
+            if self._cache:
+                self._cache.invalidate(key)
+            
+            logger.debug(f"AUTO_PRUNE key={key!r} removed {removed} old versions")
     
     def _acquire_read(self):
         """Acquire read lock."""
@@ -279,7 +527,7 @@ class ChronoMap:
                 logger.error(f"Error in change callback: {e}")
 
     # ========================================================================
-    # Event Hooks (NEW in v2.1.0)
+    # Event Hooks
     # ========================================================================
     
     def on_change(self, callback: Callable[[Any, Any, Any, float], None]) -> None:
@@ -303,7 +551,7 @@ class ChronoMap:
             return False
 
     # ========================================================================
-    # Core Methods (Enhanced)
+    # Core Methods (Optimized in v2.2.0)
     # ========================================================================
 
     def put(
@@ -353,6 +601,16 @@ class ChronoMap:
                     raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
                 self._ttl[key] = self._current_time() + ttl
 
+            # Auto-prune if needed
+            self._auto_prune(key)
+            
+            # Invalidate cache
+            if self._cache:
+                self._cache.invalidate(key)
+            
+            # Check memory limits
+            self._memory_monitor.check_memory(self._store, self._ttl)
+
             self._stats['writes'] += 1
             logger.debug("PUT key=%r value=%r at ts=%f ttl=%s", key, value, ts, ttl)
             
@@ -370,7 +628,7 @@ class ChronoMap:
         strict: bool = False
     ) -> Any:
         """
-        Retrieve the value for a key at a given timestamp.
+        Retrieve the value for a key at a given timestamp (with LRU caching).
         
         Args:
             key: The key to retrieve.
@@ -383,11 +641,31 @@ class ChronoMap:
         """
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._validate_timestamp(ts)
+        
+        # Check expiry FIRST - before cache lookup
+        # (We need to do a quick check without lock for expired keys)
+        if self._is_expired(key):
+            # Invalidate cache for expired key
+            if self._cache:
+                self._cache.invalidate(key)
+            if strict:
+                raise ChronoMapKeyError(key)
+            return default
+        
+        # Check cache - use None as cache key when getting latest value
+        if self._cache:
+            cache_key = (key, None if timestamp is None else ts)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                self._stats['cache_hits'] += 1
+                self._stats['reads'] += 1
+                return cached
+            self._stats['cache_misses'] += 1
 
         self._acquire_read()
         try:
-            # Check expiry
-            if self._clean_expired(key):
+            # Double-check expiry inside lock (in case it just expired)
+            if self._is_expired(key):
                 if strict:
                     raise ChronoMapKeyError(key)
                 return default
@@ -406,6 +684,12 @@ class ChronoMap:
                 return default
 
             value = versions[idx][1]
+            
+            # Update cache - use None for latest value queries
+            if self._cache:
+                cache_key = (key, None if timestamp is None else ts)
+                self._cache.put(cache_key, value)
+            
             self._stats['reads'] += 1
             logger.debug("GET key=%r -> %r at ts=%f", key, value, ts)
             return value
@@ -421,6 +705,11 @@ class ChronoMap:
                 del self._store[key]
                 if key in self._ttl:
                     del self._ttl[key]
+                
+                # Invalidate cache
+                if self._cache:
+                    self._cache.invalidate(key)
+                
                 self._stats['deletes'] += 1
                 logger.debug("DELETE key=%r", key)
             return existed
@@ -428,7 +717,7 @@ class ChronoMap:
             self._release_write()
 
     # ========================================================================
-    # Query & Analytics (NEW in v2.1.0)
+    # Query & Analytics
     # ========================================================================
     
     def query(
@@ -520,7 +809,7 @@ class ChronoMap:
         return len(self.query(predicate, timestamp))
 
     # ========================================================================
-    # History Management (Enhanced in v2.1.0)
+    # History Management
     # ========================================================================
     
     def prune_history(
@@ -560,6 +849,11 @@ class ChronoMap:
                 versions[:] = [(ts, val) for ts, val in versions if ts >= cutoff_ts]
             
             removed = original_count - len(versions)
+            
+            # Invalidate cache
+            if self._cache and removed > 0:
+                self._cache.invalidate(key)
+            
             logger.debug("PRUNE key=%r removed %d versions", key, removed)
             return removed
         finally:
@@ -582,7 +876,7 @@ class ChronoMap:
         return total_removed
 
     # ========================================================================
-    # Batch Operations
+    # Batch Operations (Optimized in v2.2.0)
     # ========================================================================
 
     def put_many(
@@ -591,19 +885,75 @@ class ChronoMap:
         timestamp: Optional[Union[float, str, datetime]] = None,
         ttl: Optional[float] = None
     ) -> None:
-        """Insert multiple key-value pairs at once."""
-        for key, value in items.items():
-            self.put(key, value, timestamp=timestamp, ttl=ttl)
-        logger.debug("PUT_MANY %d items", len(items))
+        """Insert multiple key-value pairs at once (optimized batch operation)."""
+        # Acquire lock once for entire batch
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        
+        self._acquire_write()
+        try:
+            for key, value in items.items():
+                self._validate_key(key)
+                
+                # Get old value for callback
+                old_value = None
+                if key in self._store and self._store[key]:
+                    old_value = self._store[key][-1][1]
+                
+                if key not in self._store:
+                    self._store[key] = []
+                versions = self._store[key]
+                
+                if not versions or ts >= versions[-1][0]:
+                    versions.append((ts, value))
+                else:
+                    bisect.insort(versions, (ts, value), key=lambda x: x[0])
+                
+                if ttl is not None:
+                    if ttl <= 0:
+                        raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
+                    self._ttl[key] = self._current_time() + ttl
+                
+                # Auto-prune
+                self._auto_prune(key)
+                
+                # Invalidate cache
+                if self._cache:
+                    self._cache.invalidate(key)
+                
+                # Trigger callbacks
+                self._trigger_change_callbacks(key, old_value, value, ts)
+            
+            # Check memory once after all inserts
+            self._memory_monitor.check_memory(self._store, self._ttl)
+            
+            self._stats['writes'] += len(items)
+            logger.debug("PUT_MANY %d items", len(items))
+        finally:
+            self._release_write()
 
     def delete_many(self, keys: List[Any]) -> int:
-        """Delete multiple keys at once."""
-        count = 0
-        for key in keys:
-            if self.delete(key):
-                count += 1
-        logger.debug("DELETE_MANY %d/%d keys", count, len(keys))
-        return count
+        """Delete multiple keys at once (optimized batch operation)."""
+        self._acquire_write()
+        try:
+            count = 0
+            for key in keys:
+                if key in self._store:
+                    del self._store[key]
+                    if key in self._ttl:
+                        del self._ttl[key]
+                    
+                    # Invalidate cache
+                    if self._cache:
+                        self._cache.invalidate(key)
+                    
+                    count += 1
+                    self._stats['deletes'] += 1
+            
+            logger.debug("DELETE_MANY %d/%d keys", count, len(keys))
+            return count
+        finally:
+            self._release_write()
 
     # ========================================================================
     # Advanced Queries
@@ -618,7 +968,8 @@ class ChronoMap:
         """Get all values for a key within a time range."""
         self._acquire_read()
         try:
-            if self._clean_expired(key):
+            # Check expiry - just check, don't clean
+            if self._is_expired(key):
                 return []
 
             versions = self._store.get(key, [])
@@ -670,14 +1021,20 @@ class ChronoMap:
             self._release_read()
 
     # ========================================================================
-    # Snapshot, Diff, Rollback (Enhanced)
+    # Snapshot, Diff, Rollback
     # ========================================================================
 
     def snapshot(self) -> ChronoMap:
         """Return a deep-copy snapshot of the current map."""
         self._acquire_read()
         try:
-            snap = ChronoMap(debug=self._debug, use_rwlock=self._use_rwlock)
+            snap = ChronoMap(
+                debug=self._debug, 
+                use_rwlock=self._use_rwlock,
+                max_history=self._max_history,
+                cache_size=0,  # Snapshots don't need cache
+                enable_ttl_cleanup=False  # No background thread for snapshots
+            )
             snap._store = deepcopy(self._store)
             snap._ttl = deepcopy(self._ttl)
             snap._snapshot_time = self._current_time()
@@ -707,6 +1064,11 @@ class ChronoMap:
         try:
             self._store = deepcopy(snapshot._store)
             self._ttl = deepcopy(snapshot._ttl)
+            
+            # Clear cache after rollback
+            if self._cache:
+                self._cache.clear()
+            
             logger.debug("ROLLBACK to snapshot at ts=%s", snapshot._snapshot_time)
         finally:
             self._release_write()
@@ -769,7 +1131,18 @@ class ChronoMap:
             if strategy == 'timestamp':
                 for key, versions in other._store.items():
                     for ts, val in versions:
-                        self.put(key, val, timestamp=ts)
+                        # Use internal put logic without re-locking
+                        if key not in self._store:
+                            self._store[key] = []
+                        target_versions = self._store[key]
+                        
+                        if not target_versions or ts >= target_versions[-1][0]:
+                            target_versions.append((ts, val))
+                        else:
+                            bisect.insort(target_versions, (ts, val), key=lambda x: x[0])
+                        
+                        self._auto_prune(key)
+                
                 for key, expiry in other._ttl.items():
                     if key not in self._ttl or expiry > self._ttl[key]:
                         self._ttl[key] = expiry
@@ -778,13 +1151,17 @@ class ChronoMap:
                     self._store[key] = deepcopy(versions)
                 for key, expiry in other._ttl.items():
                     self._ttl[key] = expiry
+            
+            # Clear cache after merge
+            if self._cache:
+                self._cache.clear()
 
             logger.debug("MERGE completed with strategy=%s", strategy)
         finally:
             self._release_write()
 
     # ========================================================================
-    # Utilities (Enhanced)
+    # Utilities
     # ========================================================================
 
     def latest(self) -> Dict[Any, Any]:
@@ -805,8 +1182,10 @@ class ChronoMap:
         """Get the complete history of a key."""
         self._acquire_read()
         try:
-            if self._clean_expired(key):
+            # Check expiry - just check, don't clean
+            if self._is_expired(key):
                 return []
+            
             return list(self._store.get(key, []))
         finally:
             self._release_read()
@@ -817,6 +1196,11 @@ class ChronoMap:
         try:
             self._store.clear()
             self._ttl.clear()
+            
+            # Clear cache
+            if self._cache:
+                self._cache.clear()
+            
             logger.debug("CLEAR all data")
         finally:
             self._release_write()
@@ -835,6 +1219,11 @@ class ChronoMap:
                 if key in self._store:
                     del self._store[key]
                 del self._ttl[key]
+                
+                # Invalidate cache
+                if self._cache:
+                    self._cache.invalidate(key)
+                
                 count += 1
             
             logger.debug("CLEAN_EXPIRED removed %d keys", count)
@@ -842,9 +1231,30 @@ class ChronoMap:
         finally:
             self._release_write()
     
-    def get_stats(self) -> Dict[str, int]:
-        """Get operation statistics."""
-        return self._stats.copy()
+    def get_stats(self) -> Dict[str, Any]:
+        """Get comprehensive operation statistics."""
+        stats = self._stats.copy()
+        
+        # Add cache stats if available
+        if self._cache:
+            cache_stats = self._cache.get_stats()
+            stats.update({
+                'cache_hits': cache_stats['hits'],
+                'cache_misses': cache_stats['misses'],
+                'cache_size': cache_stats['size'],
+                'cache_hit_rate': cache_stats['hit_rate']
+            })
+        
+        # Add TTL cleanup stats
+        if self._ttl_cleanup_thread:
+            stats['ttl_cleanup_count'] = self._ttl_cleanup_thread.cleaned_count
+        
+        # Add size stats
+        stats['total_keys'] = len(self)
+        stats['total_versions'] = sum(len(v) for v in self._store.values())
+        stats['expired_keys'] = sum(1 for k in self._ttl if self._is_expired(k))
+        
+        return stats
     
     def reset_stats(self) -> None:
         """Reset operation statistics."""
@@ -852,11 +1262,20 @@ class ChronoMap:
             'reads': 0,
             'writes': 0,
             'deletes': 0,
-            'snapshots': 0
+            'snapshots': 0,
+            'auto_prunes': 0,
+            'cache_hits': 0,
+            'cache_misses': 0
         }
+        
+        if self._cache:
+            self._cache.clear()
+        
+        if self._ttl_cleanup_thread:
+            self._ttl_cleanup_thread.cleaned_count = 0
 
     # ========================================================================
-    # Export (NEW in v2.1.0)
+    # Export
     # ========================================================================
     
     def to_dataframe(self):
@@ -941,7 +1360,8 @@ class ChronoMap:
         """Iterate over the history of a key."""
         self._acquire_read()
         try:
-            if self._clean_expired(key):
+            # Check expiry - just check, don't clean
+            if self._is_expired(key):
                 versions = []
             else:
                 versions = list(self._store.get(key, []))
@@ -1017,15 +1437,15 @@ class ChronoMap:
         return self._snapshot_time
 
     # ========================================================================
-    # Persistence (Enhanced with Compression)
+    # Persistence (Enhanced with Multiple Compression Algorithms)
     # ========================================================================
 
-    def to_dict(self, compress: bool = False) -> Union[Dict[str, Any], bytes]:
+    def to_dict(self, compress: Union[bool, str] = False) -> Union[Dict[str, Any], bytes]:
         """
         Serialize to dictionary (compatible with JSON/pickle).
         
         Args:
-            compress: If True, return compressed bytes instead of dict
+            compress: Compression method: False, 'zlib', 'gzip', 'bz2', 'lzma'
         
         Returns:
             Dictionary or compressed bytes
@@ -1036,17 +1456,35 @@ class ChronoMap:
                 'store': deepcopy(self._store),
                 'ttl': deepcopy(self._ttl),
                 'snapshot_time': self._snapshot_time,
-                'version': '2.1.0'
+                'version': '2.2.0',
+                'max_history': self._max_history
             }
             
             if compress:
                 import pickle
                 pickled = pickle.dumps(data)
-                compressed = zlib.compress(pickled, level=6)
-                logger.debug("COMPRESS: %d -> %d bytes (%.1f%%)", 
-                           len(pickled), len(compressed), 
+                
+                if compress == 'zlib' or compress is True:
+                    compressed = zlib.compress(pickled, level=6)
+                    method = 'zlib'
+                elif compress == 'gzip':
+                    compressed = gzip.compress(pickled, compresslevel=6)
+                    method = 'gzip'
+                elif compress == 'bz2':
+                    compressed = bz2.compress(pickled, compresslevel=6)
+                    method = 'bz2'
+                elif compress == 'lzma':
+                    compressed = lzma.compress(pickled, preset=6)
+                    method = 'lzma'
+                else:
+                    raise ChronoMapValueError(f"Unknown compression method: {compress}")
+                
+                logger.debug("COMPRESS (%s): %d -> %d bytes (%.1f%%)", 
+                           method, len(pickled), len(compressed), 
                            100 * len(compressed) / len(pickled))
-                return compressed
+                
+                # Prepend compression method marker
+                return method.encode() + b'|' + compressed
             
             return data
         finally:
@@ -1054,7 +1492,7 @@ class ChronoMap:
 
     @classmethod
     def from_dict(cls, data: Union[Dict[str, Any], bytes], debug: bool = False, 
-                  use_rwlock: bool = True) -> ChronoMap:
+                  use_rwlock: bool = True, **kwargs) -> ChronoMap:
         """
         Reconstruct ChronoMap from dictionary or compressed bytes.
         
@@ -1062,17 +1500,55 @@ class ChronoMap:
             data: Dictionary from to_dict() or compressed bytes
             debug: Enable debug mode
             use_rwlock: Use read-write locks
+            **kwargs: Additional arguments for ChronoMap constructor
         
         Returns:
             New ChronoMap instance
         """
         if isinstance(data, bytes):
-            # Decompress
-            decompressed = zlib.decompress(data)
+            # Auto-detect compression method
+            if b'|' in data[:20]:
+                method_bytes, compressed = data.split(b'|', 1)
+                method = method_bytes.decode()
+                
+                if method == 'zlib':
+                    decompressed = zlib.decompress(compressed)
+                elif method == 'gzip':
+                    decompressed = gzip.decompress(compressed)
+                elif method == 'bz2':
+                    decompressed = bz2.decompress(compressed)
+                elif method == 'lzma':
+                    decompressed = lzma.decompress(compressed)
+                else:
+                    # Fallback: try all methods
+                    try:
+                        decompressed = zlib.decompress(data)
+                    except:
+                        try:
+                            decompressed = gzip.decompress(data)
+                        except:
+                            try:
+                                decompressed = bz2.decompress(data)
+                            except:
+                                decompressed = lzma.decompress(data)
+            else:
+                # Old format without method marker
+                try:
+                    decompressed = zlib.decompress(data)
+                except:
+                    decompressed = data
+            
             import pickle
             data = pickle.loads(decompressed)
         
-        instance = cls(debug=debug, use_rwlock=use_rwlock)
+        max_history = data.get('max_history')
+        
+        instance = cls(
+            debug=debug, 
+            use_rwlock=use_rwlock,
+            max_history=max_history,
+            **kwargs
+        )
         instance._store = deepcopy(data.get('store', {}))
         instance._ttl = deepcopy(data.get('ttl', {}))
         instance._snapshot_time = data.get('snapshot_time')
@@ -1087,7 +1563,8 @@ class ChronoMap:
             'store': {str(k): v for k, v in data['store'].items()},
             'ttl': {str(k): v for k, v in data['ttl'].items()},
             'snapshot_time': data['snapshot_time'],
-            'version': data.get('version', '2.0.0')
+            'version': data.get('version', '2.2.0'),
+            'max_history': data.get('max_history')
         }
         
         with open(path, 'w') as f:
@@ -1096,7 +1573,7 @@ class ChronoMap:
 
     @classmethod
     def load_json(cls, file_path: Union[str, Path], debug: bool = False, 
-                  use_rwlock: bool = True) -> ChronoMap:
+                  use_rwlock: bool = True, **kwargs) -> ChronoMap:
         """Load ChronoMap from JSON file."""
         path = Path(file_path)
         with open(path, 'r') as f:
@@ -1106,26 +1583,27 @@ class ChronoMap:
             'store': json_data['store'],
             'ttl': json_data['ttl'],
             'snapshot_time': json_data.get('snapshot_time'),
-            'version': json_data.get('version', '2.0.0')
+            'version': json_data.get('version', '2.0.0'),
+            'max_history': json_data.get('max_history')
         }
         
         logger.debug("LOAD_JSON from %s", file_path)
-        return cls.from_dict(data, debug=debug, use_rwlock=use_rwlock)
+        return cls.from_dict(data, debug=debug, use_rwlock=use_rwlock, **kwargs)
 
-    def save_pickle(self, file_path: Union[str, Path], compress: bool = False) -> None:
+    def save_pickle(self, file_path: Union[str, Path], compress: Union[bool, str] = False) -> None:
         """
         Save ChronoMap to pickle file.
         
         Args:
             file_path: Path to save pickle file
-            compress: Compress the data with zlib
+            compress: Compression method: False, 'zlib', 'gzip', 'bz2', 'lzma'
         """
         path = Path(file_path)
         data = self.to_dict(compress=compress)
         
         with open(path, 'wb') as f:
-            if compress:
-                f.write(data)  # Already compressed bytes
+            if isinstance(data, bytes):
+                f.write(data)  # Already compressed
             else:
                 pickle.dump(data, f)
         
@@ -1133,14 +1611,15 @@ class ChronoMap:
 
     @classmethod
     def load_pickle(cls, file_path: Union[str, Path], debug: bool = False,
-                    use_rwlock: bool = True) -> ChronoMap:
+                    use_rwlock: bool = True, **kwargs) -> ChronoMap:
         """
-        Load ChronoMap from pickle file.
+        Load ChronoMap from pickle file (auto-detects compression).
         
         Args:
             file_path: Path to pickle file
             debug: Enable debug mode
             use_rwlock: Use read-write locks
+            **kwargs: Additional arguments for ChronoMap constructor
         
         Returns:
             New ChronoMap instance
@@ -1153,43 +1632,46 @@ class ChronoMap:
         try:
             data = pickle.loads(data_bytes)
         except:
-            # Try decompression
-            data = zlib.decompress(data_bytes)
-            data = pickle.loads(data)
+            # It's compressed, let from_dict handle it
+            data = data_bytes
         
         logger.debug("LOAD_PICKLE from %s", file_path)
-        return cls.from_dict(data, debug=debug, use_rwlock=use_rwlock)
+        return cls.from_dict(data, debug=debug, use_rwlock=use_rwlock, **kwargs)
 
 
 # ============================================================================
-# Async ChronoMap (NEW in v2.1.0)
+# Async ChronoMap (Enhanced in v2.2.0)
 # ============================================================================
 
 class AsyncChronoMap:
     """
     Async version of ChronoMap for use with asyncio.
     
+    Enhanced in v2.2.0 with auto-pruning and better performance.
+    
     Example:
         >>> async def main():
-        ...     cm = AsyncChronoMap()
+        ...     cm = AsyncChronoMap(max_history=1000)
         ...     await cm.put('key', 'value')
         ...     value = await cm.get('key')
         ...     print(value)
     """
     
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, max_history: Optional[int] = None):
         """Initialize AsyncChronoMap."""
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
         self._lock = asyncio.Lock()
         self._snapshot_time: Optional[float] = None
         self._debug = debug
+        self._max_history = max_history
         self._change_callbacks: List[Callable] = []
         self._stats = {
             'reads': 0,
             'writes': 0,
             'deletes': 0,
-            'snapshots': 0
+            'snapshots': 0,
+            'auto_prunes': 0
         }
         
         if debug:
@@ -1227,6 +1709,18 @@ class AsyncChronoMap:
             return False
         return self._current_time() >= self._ttl[key]
     
+    def _auto_prune(self, key: Any) -> None:
+        """Auto-prune history if max_history exceeded."""
+        if self._max_history is None:
+            return
+        
+        versions = self._store.get(key, [])
+        if len(versions) > self._max_history:
+            removed = len(versions) - self._max_history
+            self._store[key] = versions[-self._max_history:]
+            self._stats['auto_prunes'] += 1
+            logger.debug(f"AUTO_PRUNE key={key!r} removed {removed} old versions")
+    
     async def put(
         self,
         key: Any,
@@ -1234,6 +1728,7 @@ class AsyncChronoMap:
         timestamp: Optional[Union[float, str, datetime]] = None,
         ttl: Optional[float] = None
     ) -> None:
+        """Store a key-value pair asynchronously."""
         self._validate_key(key)
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         
@@ -1255,6 +1750,9 @@ class AsyncChronoMap:
                 if ttl <= 0:
                     raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
                 self._ttl[key] = self._current_time() + ttl
+            
+            # Auto-prune
+            self._auto_prune(key)
             
             self._stats['writes'] += 1
             
@@ -1326,7 +1824,7 @@ class AsyncChronoMap:
     async def snapshot(self) -> AsyncChronoMap:
         """Create a snapshot asynchronously."""
         async with self._lock:
-            snap = AsyncChronoMap(debug=self._debug)
+            snap = AsyncChronoMap(debug=self._debug, max_history=self._max_history)
             snap._store = deepcopy(self._store)
             snap._ttl = deepcopy(self._ttl)
             snap._snapshot_time = self._current_time()
@@ -1362,7 +1860,7 @@ class AsyncChronoMap:
 # Version Info
 # ============================================================================
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 __all__ = [
     "ChronoMap",
     "AsyncChronoMap",
@@ -1370,6 +1868,8 @@ __all__ = [
     "ChronoMapKeyError",
     "ChronoMapTypeError",
     "ChronoMapValueError",
+    "ChronoMapMemoryError",
     "SnapshotContext",
     "RWLock",
+    "LRUCache",
 ]
