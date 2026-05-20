@@ -16,6 +16,12 @@
 [![Tests](https://img.shields.io/badge/tests-134%20passed-success?style=flat-square)](tests/)
 [![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen?style=flat-square)]()
 [![Code Quality](https://img.shields.io/badge/code%20quality-A+-blue?style=flat-square)]()
+[![PyPI version](https://img.shields.io/pypi/v/chronomap?color=blue&style=flat-square)](https://pypi.org/project/chronomap/)
+[![Python](https://img.shields.io/pypi/pyversions/chronomap?style=flat-square)](https://pypi.org/project/chronomap/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-134%20passed-success?style=flat-square)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen?style=flat-square)]()
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
 
 
