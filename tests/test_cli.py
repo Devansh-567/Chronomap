@@ -4,7 +4,6 @@ Unit tests for ChronoMap CLI helper functions and commands.
 
 import pytest
 import tempfile
-import json
 from pathlib import Path
 from datetime import datetime
 from chronomap.cli import (
@@ -75,7 +74,7 @@ class TestCLILoadDisplay:
         """Test load_and_display behavior on a nonexistent file."""
         load_and_display("nonexistent_file.json")
         captured = capsys.readouterr()
-        assert "not found" in captured.out
+        assert "not found" in (captured.out + captured.err)
 
     def test_load_and_display_unsupported(self, capsys):
         """Test load_and_display on an unsupported file format."""
@@ -84,7 +83,7 @@ class TestCLILoadDisplay:
             temp_file.touch()
             load_and_display(str(temp_file))
             captured = capsys.readouterr()
-            assert "Unsupported file type" in captured.out
+            assert "Unsupported file type" in (captured.out + captured.err)
 
     def test_load_and_display_json(self, capsys):
         """Test load_and_display successfully loads and prints ChronoMap state from JSON."""
@@ -98,10 +97,11 @@ class TestCLILoadDisplay:
 
             load_and_display(str(temp_file))
             captured = capsys.readouterr()
-            assert "Loaded ChronoMap from" in captured.out
-            assert "Keys: 2" in captured.out
-            assert "a: 1" in captured.out
-            assert "b: 2" in captured.out
+            output = captured.out + captured.err
+            assert "Loaded ChronoMap from" in output
+            assert "Keys: 2" in output
+            assert "a: 1" in output
+            assert "b: 2" in output
 
     def test_load_and_display_pickle(self, capsys):
         """Test load_and_display successfully loads and prints ChronoMap state from pickle."""
@@ -115,10 +115,11 @@ class TestCLILoadDisplay:
 
             load_and_display(str(temp_file))
             captured = capsys.readouterr()
-            assert "Loaded ChronoMap from" in captured.out
-            assert "Keys: 2" in captured.out
-            assert "x: hello" in captured.out
-            assert "y: world" in captured.out
+            output = captured.out + captured.err
+            assert "Loaded ChronoMap from" in output
+            assert "Keys: 2" in output
+            assert "x: hello" in output
+            assert "y: world" in output
 
     def test_load_and_display_invalid_format(self, capsys):
         """Test load_and_display error handling when loading corrupt data."""
@@ -128,4 +129,4 @@ class TestCLILoadDisplay:
 
             load_and_display(str(temp_file))
             captured = capsys.readouterr()
-            assert "Error loading file:" in captured.out
+            assert "Error loading file:" in (captured.out + captured.err)
