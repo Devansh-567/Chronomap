@@ -47,6 +47,7 @@ import time as time_module
 
 logger = logging.getLogger(__name__)
 
+_CACHE_MISS = object()
 
 # ============================================================================
 # Custom Exceptions
@@ -79,7 +80,8 @@ class ChronoMapMemoryError(ChronoMapError, MemoryError):
 
 # ============================================================================
 # LRU Cache for Read Optimization (NEW in v2.2.0)
-# ============================================================================
+# ===========================
+# =================================================
 
 class LRUCache:
     """Thread-safe LRU cache for frequently accessed keys."""
@@ -91,6 +93,7 @@ class LRUCache:
         self.hits = 0
         self.misses = 0
     
+    def get(self, key: Tuple[Any, float]) -> Any:
     def get(self, key: Tuple[Any, float]) -> Optional[Any]:
         """
         Get value from cache.
@@ -106,9 +109,10 @@ class LRUCache:
                 self.cache.move_to_end(key)
                 self.hits += 1
                 return self.cache[key]
+
             self.misses += 1
-            return None
-    
+            return _CACHE_MISS
+            
     def put(self, key: Tuple[Any, float], value: Any) -> None:
         """
         Put value in cache.
@@ -567,7 +571,36 @@ class ChronoMap:
                 callback(key, old_value, new_value, timestamp)
             except Exception as e:
                 logger.error(f"Error in change callback: {e}")
+    def _get_unlocked(
+        self,
+        key: Any,
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        default: Any = None,
+        *,
+        strict: bool = False
+    ) -> Any:
+        """Internal get that assumes caller already holds a read lock."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
 
+        if self._is_expired(key):
+            if strict:
+                raise ChronoMapKeyError(key)
+            return default
+
+        versions = self._store.get(key, [])
+        if not versions:
+            if strict:
+                raise ChronoMapKeyError(key)
+            return default
+
+        times = [v[0] for v in versions]
+        idx = bisect.bisect_right(times, ts) - 1
+        if idx < 0:
+            if strict:
+                raise ChronoMapKeyError(key)
+            return default
+
+        return versions[idx][1]
     # ========================================================================
     # Event Hooks
     # ========================================================================
@@ -669,6 +702,7 @@ class ChronoMap:
         *,
         strict: bool = False
     ) -> Any:
+       
         """
         Retrieve the value for a key at a given timestamp (with LRU caching).
         
@@ -698,7 +732,7 @@ class ChronoMap:
         if self._cache:
             cache_key = (key, None if timestamp is None else ts)
             cached = self._cache.get(cache_key)
-            if cached is not None:
+            if cached is not _CACHE_MISS:
                 self._stats['cache_hits'] += 1
                 self._stats['reads'] += 1
                 return cached
@@ -788,7 +822,7 @@ class ChronoMap:
             for key in self._store:
                 if self._is_expired(key):
                     continue
-                value = self.get(key, timestamp=ts)
+                value = self._get_unlocked(key, timestamp=ts)
                 if value is not None and predicate(key, value):
                     result[key] = value
             return result
@@ -825,7 +859,7 @@ class ChronoMap:
             
             for key in target_keys:
                 if not self._is_expired(key):
-                    val = self.get(key, timestamp=ts)
+                    val = self._get_unlocked(key, timestamp=ts)
                     if val is not None:
                         values.append(val)
             
@@ -1055,7 +1089,7 @@ class ChronoMap:
             for key in self._store:
                 if self._is_expired(key):
                     continue
-                if self.get(key, timestamp=ts) == value:
+                if self._get_unlocked(key, timestamp=ts) == value:
                     keys.append(key)
             logger.debug("GET_KEYS_BY_VALUE found %d keys", len(keys))
             return keys
