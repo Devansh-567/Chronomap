@@ -39,13 +39,15 @@ import weakref
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, List, Tuple, Dict, Set, Iterator, Union, Callable
+from typing import Any, Optional, List, Tuple, Dict, Set, Iterator, Union, Callable, Awaitable
 from collections.abc import Mapping
 from collections import OrderedDict
 from functools import wraps
 import time as time_module
 
 logger = logging.getLogger(__name__)
+
+ChangeCallback = Callable[[Any, Any, Any, float], Union[Awaitable[None], None]]
 
 
 # ============================================================================
@@ -1831,7 +1833,7 @@ class AsyncChronoMap:
             self._stats['snapshots'] += 1
             return snap
     
-    def on_change(self, callback: Callable[[Any, Any, Any, float], Any]) -> None:
+    def on_change(self, callback: ChangeCallback) -> None:
         """Register change callback (can be sync or async)."""
         self._change_callbacks.append(callback)
     
