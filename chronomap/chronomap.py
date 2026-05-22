@@ -92,7 +92,15 @@ class LRUCache:
         self.misses = 0
     
     def get(self, key: Tuple[Any, float]) -> Optional[Any]:
-        """Get value from cache."""
+        """
+        Get value from cache.
+        
+        Example:
+            >>> cache = LRUCache(capacity=10)
+            >>> cache.put(('mykey', 1.0), 'hello')
+            >>> cache.get(('mykey', 1.0))
+            'hello'
+        """
         with self.lock:
             if key in self.cache:
                 self.cache.move_to_end(key)
@@ -102,7 +110,13 @@ class LRUCache:
             return None
     
     def put(self, key: Tuple[Any, float], value: Any) -> None:
-        """Put value in cache."""
+        """
+        Put value in cache.
+        
+        Example:
+            >>> cache = LRUCache(capacity=10)
+            >>> cache.put(('mykey', 1.0), 'hello')
+        """
         with self.lock:
             if key in self.cache:
                 self.cache.move_to_end(key)
@@ -111,21 +125,49 @@ class LRUCache:
                 self.cache.popitem(last=False)
     
     def invalidate(self, store_key: Any) -> None:
-        """Invalidate all cache entries for a store key."""
+        """
+        Invalidate all cache entries for a store key.
+        
+        Example:
+            >>> cache = LRUCache(capacity=10)
+            >>> cache.put(('mykey', 1.0), 'hello')
+            >>> cache.invalidate('mykey')
+            >>> cache.get(('mykey', 1.0)) is None
+            True
+        """
         with self.lock:
             keys_to_remove = [k for k in self.cache.keys() if k[0] == store_key]
             for k in keys_to_remove:
                 del self.cache[k]
     
     def clear(self) -> None:
-        """Clear entire cache."""
+        """
+        Clear entire cache.
+        
+        Example:
+            >>> cache = LRUCache(capacity=10)
+            >>> cache.put(('mykey', 1.0), 'hello')
+            >>> cache.clear()
+            >>> cache.get(('mykey', 1.0)) is None
+            True
+        """
         with self.lock:
             self.cache.clear()
             self.hits = 0
             self.misses = 0
     
     def get_stats(self) -> Dict[str, int]:
-        """Get cache statistics."""
+        """
+        Get cache statistics.
+        
+        Example:
+            >>> cache = LRUCache(capacity=10)
+            >>> cache.put(('mykey', 1.0), 'hello')
+            >>> cache.get(('mykey', 1.0))
+            'hello'
+            >>> cache.get_stats()
+            {'hits': 1, 'misses': 0, 'size': 1, 'capacity': 10, 'hit_rate': 100.0}
+        """
         with self.lock:
             total = self.hits + self.misses
             hit_rate = (self.hits / total * 100) if total > 0 else 0
