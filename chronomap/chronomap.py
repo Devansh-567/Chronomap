@@ -169,7 +169,7 @@ class RWLock:
         try:
             self._readers -= 1
             if self._readers == 0:
-                self._read_ready.notifyAll()
+                self._read_ready.notify_all()
         finally:
             self._read_ready.release()
     
@@ -186,11 +186,11 @@ class RWLock:
     def release_write(self):
         """Release write lock."""
         self._writers -= 1
-        self._read_ready.notifyAll()
+        self._read_ready.notify_all()
         self._read_ready.release()
         
         self._write_ready.acquire()
-        self._write_ready.notifyAll()
+        self._write_ready.notify_all()
         self._write_ready.release()
 
 
