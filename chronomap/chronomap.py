@@ -669,7 +669,9 @@ class ChronoMap:
             if not versions or ts >= versions[-1][0]:
                 versions.append((ts, value))
             else:
-                bisect.insort(versions, (ts, value), key=lambda x: x[0])
+                times = [v[0] for v in versions]
+                idx = bisect.bisect_right(times, ts)
+                versions.insert(idx, (ts, value))
 
             # Set TTL if provided
             if ttl is not None:
@@ -984,7 +986,9 @@ class ChronoMap:
                 if not versions or ts >= versions[-1][0]:
                     versions.append((ts, value))
                 else:
-                    bisect.insort(versions, (ts, value), key=lambda x: x[0])
+                    times = [v[0] for v in versions]
+                    idx = bisect.bisect_right(times, ts)
+                    versions.insert(idx, (ts, value))
                 
                 if ttl is not None:
                     if ttl <= 0:
@@ -1216,7 +1220,9 @@ class ChronoMap:
                         if not target_versions or ts >= target_versions[-1][0]:
                             target_versions.append((ts, val))
                         else:
-                            bisect.insort(target_versions, (ts, val), key=lambda x: x[0])
+                            times = [v[0] for v in versions]
+                            idx = bisect.bisect_right(times, ts)
+                            versions.insert(idx, (ts, value))
                         
                         self._auto_prune(key)
                 
@@ -1821,7 +1827,9 @@ class AsyncChronoMap:
             if not versions or ts >= versions[-1][0]:
                 versions.append((ts, value))
             else:
-                bisect.insort(versions, (ts, value), key=lambda x: x[0])
+                times = [v[0] for v in versions]
+                idx = bisect.bisect_right(times, ts)
+                versions.insert(idx, (ts, value))
             
             if ttl is not None:
                 if ttl <= 0:
