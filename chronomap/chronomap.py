@@ -39,7 +39,7 @@ import weakref
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, List, Tuple, Dict, Set, Iterator, Union, Callable
+from typing import Any, Optional, List, Tuple, Dict, Set, Iterator, Union, Callable, Awaitable
 from collections.abc import Mapping
 from collections import OrderedDict
 from functools import wraps
@@ -47,7 +47,8 @@ import time as time_module
 
 logger = logging.getLogger(__name__)
 
-_CACHE_MISS = object()
+ChangeCallback = Callable[[Any, Any, Any, float], Union[Awaitable[None], None]]
+
 
 # ============================================================================
 # Custom Exceptions
@@ -86,7 +87,7 @@ class ChronoMapMemoryError(ChronoMapError, MemoryError):
 class LRUCache:
     """Thread-safe LRU cache for frequently accessed keys."""
     
-    def __init__(self, capacity: int = 1000):
+    def __init__(self, capacity: int = 1000) -> None:
         self.capacity = capacity
         self.cache: OrderedDict = OrderedDict()
         self.lock = threading.Lock()
@@ -191,7 +192,7 @@ class LRUCache:
 class RWLock:
     """Read-Write lock allowing multiple readers or single writer."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self._readers = 0
         self._writers = 0
         self._read_ready = threading.Condition(threading.RLock())
@@ -245,7 +246,7 @@ class RWLock:
 class SnapshotContext:
     """Context manager for automatic rollback on exception."""
     
-    def __init__(self, chronomap: ChronoMap):
+    def __init__(self, chronomap: ChronoMap) -> None:
         self.chronomap = chronomap
         self.snapshot = None
     
@@ -267,7 +268,7 @@ class SnapshotContext:
 class TTLCleanupThread:
     """Background thread for automatic TTL cleanup."""
     
-    def __init__(self, chronomap_ref: weakref.ref, interval: float = 60.0):
+    def __init__(self, chronomap_ref: weakref.ref, interval: float = 60.0) -> None:
         self.chronomap_ref = chronomap_ref
         self.interval = interval
         self.thread = None
@@ -322,7 +323,7 @@ class TTLCleanupThread:
 class MemoryMonitor:
     """Monitor and enforce memory limits."""
     
-    def __init__(self, max_memory_mb: Optional[float] = None):
+    def __init__(self, max_memory_mb: Optional[float] = None) -> None:
         self.max_memory_bytes = int(max_memory_mb * 1024 * 1024) if max_memory_mb else None
         self.warning_threshold = 0.8  # Warn at 80%
         self.warned = False
@@ -395,7 +396,7 @@ class ChronoMap:
         enable_ttl_cleanup: bool = True,
         ttl_cleanup_interval: float = 60.0,
         max_memory_mb: Optional[float] = None
-    ):
+    ) -> None:
         """
         Initialize a ChronoMap.
         
@@ -1733,7 +1734,7 @@ class AsyncChronoMap:
         ...     print(value)
     """
     
-    def __init__(self, debug: bool = False, max_history: Optional[int] = None):
+    def __init__(self, debug: bool = False, max_history: Optional[int] = None) -> None:
         """Initialize AsyncChronoMap."""
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
@@ -1907,7 +1908,7 @@ class AsyncChronoMap:
             self._stats['snapshots'] += 1
             return snap
     
-    def on_change(self, callback: Callable) -> None:
+    def on_change(self, callback: ChangeCallback) -> None:
         """Register change callback (can be sync or async)."""
         self._change_callbacks.append(callback)
     
