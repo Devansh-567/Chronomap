@@ -214,7 +214,7 @@ class RWLock:
         try:
             self._readers -= 1
             if self._readers == 0:
-                self._read_ready.notifyAll()
+                self._read_ready.notify_all()
         finally:
             self._read_ready.release()
     
@@ -231,11 +231,11 @@ class RWLock:
     def release_write(self):
         """Release write lock."""
         self._writers -= 1
-        self._read_ready.notifyAll()
+        self._read_ready.notify_all()
         self._read_ready.release()
         
         self._write_ready.acquire()
-        self._write_ready.notifyAll()
+        self._write_ready.notify_all()
         self._write_ready.release()
 
 
@@ -1220,9 +1220,9 @@ class ChronoMap:
                         if not target_versions or ts >= target_versions[-1][0]:
                             target_versions.append((ts, val))
                         else:
-                            times = [v[0] for v in versions]
+                            times = [v[0] for v in target_versions]
                             idx = bisect.bisect_right(times, ts)
-                            versions.insert(idx, (ts, value))
+                            target_versions.insert(idx, (ts, val))
                         
                         self._auto_prune(key)
                 
