@@ -1073,6 +1073,76 @@ class TestEventHooks:
             cm['key'] = 'value'
         assert "Error in change callback" in caplog.text
 
+    def test_subscribe_only_fires_for_matching_key(self):
+        cm = ChronoMap()
+        changes = []
+
+        cm.subscribe('app.config', lambda old, new, ts: changes.append((old, new)))
+
+        cm['app.config'] = 'v1'
+        cm['other.key'] = 'ignored'
+        cm['app.config'] = 'v2'
+
+        assert changes == [(None, 'v1'), ('v1', 'v2')]
+
+    def test_subscribe_supports_multiple_callbacks_on_same_key(self):
+        cm = ChronoMap()
+        first = []
+        second = []
+
+        cm.subscribe('key', lambda old, new, ts: first.append(new))
+        cm.subscribe('key', lambda old, new, ts: second.append((old, new)))
+
+        cm.put('key', 'value')
+
+        assert first == ['value']
+        assert second == [(None, 'value')]
+
+    def test_unsubscribe_removes_only_requested_callback(self):
+        cm = ChronoMap()
+        first = []
+        second = []
+
+        def callback_one(old, new, ts):
+            first.append(new)
+
+        def callback_two(old, new, ts):
+            second.append(new)
+
+        cm.subscribe('key', callback_one)
+        cm.subscribe('key', callback_two)
+
+        assert cm.unsubscribe('key', callback_one) is True
+        cm.put('key', 'value')
+
+        assert first == []
+        assert second == ['value']
+        assert cm.unsubscribe('key', callback_one) is False
+
+    def test_subscribe_works_with_put_many(self):
+        cm = ChronoMap()
+        watched = []
+
+        cm.subscribe('a', lambda old, new, ts: watched.append(('a', old, new)))
+        cm.subscribe('b', lambda old, new, ts: watched.append(('b', old, new)))
+
+        cm.put_many({'a': 1, 'b': 2, 'c': 3})
+
+        assert watched == [('a', None, 1), ('b', None, 2)]
+
+    def test_subscriber_exception_handling(self, caplog):
+        cm = ChronoMap()
+
+        def bad_callback(old, new, ts):
+            raise RuntimeError("Subscriber failed")
+
+        cm.subscribe('key', bad_callback)
+
+        with caplog.at_level("ERROR"):
+            cm.put('key', 'value')
+
+        assert "Error in key subscriber callback" in caplog.text
+
 
 # ============================================================================
 # Query & Analytics Tests
@@ -1374,6 +1444,35 @@ class TestAsyncChronoMap:
         cm.on_change(async_cb)
         await cm.put('k', 'v')
         assert log == [('k', 'v')]
+
+    @pytest.mark.asyncio
+    async def test_async_subscribe_only_fires_for_matching_key(self):
+        cm = AsyncChronoMap()
+        log = []
+
+        cm.subscribe('config', lambda old, new, ts: log.append((old, new)))
+
+        await cm.put('config', 'v1')
+        await cm.put('other', 'ignored')
+        await cm.put('config', 'v2')
+
+        assert log == [(None, 'v1'), ('v1', 'v2')]
+
+    @pytest.mark.asyncio
+    async def test_async_subscribe_accepts_async_callback_and_unsubscribes(self):
+        cm = AsyncChronoMap()
+        log = []
+
+        async def callback(old, new, ts):
+            log.append(new)
+
+        cm.subscribe('key', callback)
+        await cm.put_many({'key': 'v1', 'other': 'ignored'})
+
+        assert cm.unsubscribe('key', callback) is True
+        await cm.put('key', 'v2')
+
+        assert log == ['v1']
 
     @pytest.mark.asyncio
     async def test_async_keys_latest(self):

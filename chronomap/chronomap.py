@@ -48,6 +48,8 @@ import time as time_module
 logger = logging.getLogger(__name__)
 
 ChangeCallback = Callable[[Any, Any, Any, float], Union[Awaitable[None], None]]
+KeyChangeCallback = Callable[[Any, Any, float], Union[Awaitable[None], None]]
+_CACHE_MISS = object()
 
 
 # ============================================================================
@@ -94,8 +96,7 @@ class LRUCache:
         self.hits = 0
         self.misses = 0
     
-    def get(self, key: Tuple[Any, float]) -> Any:
-    def get(self, key: Tuple[Any, float]) -> Optional[Any]:
+    def get(self, key: Tuple[Any, float], default: Any = None) -> Any:
         """
         Get value from cache.
         
@@ -112,7 +113,7 @@ class LRUCache:
                 return self.cache[key]
 
             self.misses += 1
-            return _CACHE_MISS
+            return default
             
     def put(self, key: Tuple[Any, float], value: Any) -> None:
         """
@@ -439,6 +440,7 @@ class ChronoMap:
         
         # Event hooks
         self._change_callbacks: List[Callable] = []
+        self._key_subscribers: Dict[Any, List[Callable]] = {}
         
         # Statistics
         self._stats = {
@@ -566,12 +568,18 @@ class ChronoMap:
             self._lock.release()
     
     def _trigger_change_callbacks(self, key: Any, old_value: Any, new_value: Any, timestamp: float):
-        """Trigger all registered change callbacks."""
-        for callback in self._change_callbacks:
+        """Trigger global change callbacks and subscribers for the changed key."""
+        for callback in list(self._change_callbacks):
             try:
                 callback(key, old_value, new_value, timestamp)
             except Exception as e:
                 logger.error(f"Error in change callback: {e}")
+        for callback in list(self._key_subscribers.get(key, [])):
+            try:
+                callback(old_value, new_value, timestamp)
+            except Exception as e:
+                logger.error(f"Error in key subscriber callback for {key!r}: {e}")
+
     def _get_unlocked(
         self,
         key: Any,
@@ -617,6 +625,50 @@ class ChronoMap:
             >>> cm.on_change(lambda k, o, n, t: print(f"{k}: {o} -> {n}"))
         """
         self._change_callbacks.append(callback)
+
+    def subscribe(self, key: Any, callback: KeyChangeCallback) -> None:
+        """
+        Register a callback for changes to one specific key.
+
+        Args:
+            key: Key to watch.
+            callback: Function(old_value, new_value, timestamp) -> None.
+
+        Example:
+            >>> cm.subscribe('app.config', lambda old, new, ts: print(new))
+        """
+        self._validate_key(key)
+        if not callable(callback):
+            raise ChronoMapTypeError("Subscriber callback must be callable")
+
+        self._acquire_write()
+        try:
+            self._key_subscribers.setdefault(key, []).append(callback)
+        finally:
+            self._release_write()
+
+    def unsubscribe(self, key: Any, callback: KeyChangeCallback) -> bool:
+        """
+        Remove a key-specific subscriber.
+
+        Returns:
+            True if the callback was registered for the key and removed.
+        """
+        self._validate_key(key)
+        self._acquire_write()
+        try:
+            callbacks = self._key_subscribers.get(key)
+            if not callbacks:
+                return False
+            try:
+                callbacks.remove(callback)
+            except ValueError:
+                return False
+            if not callbacks:
+                del self._key_subscribers[key]
+            return True
+        finally:
+            self._release_write()
     
     def remove_change_callback(self, callback: Callable) -> bool:
         """Remove a change callback. Returns True if found."""
@@ -734,7 +786,7 @@ class ChronoMap:
         # Check cache - use None as cache key when getting latest value
         if self._cache:
             cache_key = (key, None if timestamp is None else ts)
-            cached = self._cache.get(cache_key)
+            cached = self._cache.get(cache_key, _CACHE_MISS)
             if cached is not _CACHE_MISS:
                 self._stats['cache_hits'] += 1
                 self._stats['reads'] += 1
@@ -1749,6 +1801,7 @@ class AsyncChronoMap:
         self._debug = debug
         self._max_history = max_history
         self._change_callbacks: List[Callable] = []
+        self._key_subscribers: Dict[Any, List[Callable]] = {}
         self._stats = {
             'reads': 0,
             'writes': 0,
@@ -1842,11 +1895,18 @@ class AsyncChronoMap:
             self._stats['writes'] += 1
             
             # Trigger callbacks
-            for callback in self._change_callbacks:
+            callbacks = list(self._change_callbacks)
+            key_callbacks = list(self._key_subscribers.get(key, []))
+            for callback in callbacks:
                 if asyncio.iscoroutinefunction(callback):
                     await callback(key, old_value, value, ts)
                 else:
                     callback(key, old_value, value, ts)
+            for callback in key_callbacks:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(old_value, value, ts)
+                else:
+                    callback(old_value, value, ts)
 
     async def put_many(
         self,
@@ -1919,6 +1979,27 @@ class AsyncChronoMap:
     def on_change(self, callback: ChangeCallback) -> None:
         """Register change callback (can be sync or async)."""
         self._change_callbacks.append(callback)
+
+    def subscribe(self, key: Any, callback: KeyChangeCallback) -> None:
+        """Register a sync or async callback for one specific key."""
+        self._validate_key(key)
+        if not callable(callback):
+            raise ChronoMapTypeError("Subscriber callback must be callable")
+        self._key_subscribers.setdefault(key, []).append(callback)
+
+    def unsubscribe(self, key: Any, callback: KeyChangeCallback) -> bool:
+        """Remove a key-specific callback. Returns True if found."""
+        self._validate_key(key)
+        callbacks = self._key_subscribers.get(key)
+        if not callbacks:
+            return False
+        try:
+            callbacks.remove(callback)
+        except ValueError:
+            return False
+        if not callbacks:
+            del self._key_subscribers[key]
+        return True
     
     async def keys(self) -> List[Any]:
         """Get all keys asynchronously."""
