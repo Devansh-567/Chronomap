@@ -802,6 +802,34 @@ class TestUtilityMethods:
         assert cm.get_or_default('feature', False) is False
         assert cm.get('feature') is False
 
+    def test_keys_with_history_count_empty(self):
+        cm = ChronoMap()
+        assert cm.keys_with_history_count() == {}
+
+    def test_keys_with_history_count(self):
+        cm = ChronoMap()
+        cm.put('a', 1, timestamp=1)
+        cm.put('a', 2, timestamp=2)
+        cm.put('b', 99, timestamp=1)
+
+        assert cm.keys_with_history_count() == {'a': 2, 'b': 1}
+
+    def test_keys_with_history_count_respects_max_history(self):
+        cm = ChronoMap(max_history=2)
+        for i in range(5):
+            cm.put('a', i, timestamp=i)
+        cm.put('b', 1, timestamp=1)
+
+        assert cm.keys_with_history_count() == {'a': 2, 'b': 1}
+
+    def test_keys_with_history_count_skips_expired_keys(self):
+        cm = ChronoMap(enable_ttl_cleanup=False)
+        cm.put('temp', 'value', ttl=0.1)
+        cm.put('perm', 'value')
+        time.sleep(0.15)
+
+        assert cm.keys_with_history_count() == {'perm': 1}
+
     def test_clear(self):
         cm = ChronoMap()
         cm.put_many({'a': 1, 'b': 2})
@@ -1527,6 +1555,15 @@ class TestAsyncChronoMap:
         assert missing == 'created'
         assert existing == 'created'
         assert calls == ['called']
+
+    @pytest.mark.asyncio
+    async def test_async_keys_with_history_count(self):
+        cm = AsyncChronoMap()
+        await cm.put('a', 1, timestamp=1)
+        await cm.put('a', 2, timestamp=2)
+        await cm.put('b', 99, timestamp=1)
+
+        assert await cm.keys_with_history_count() == {'a': 2, 'b': 1}
     
     @pytest.mark.asyncio
     async def test_async_with_max_history(self):
