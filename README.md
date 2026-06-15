@@ -348,6 +348,21 @@ with open('audit.json', 'w') as f:
 cm.remove_change_callback(track_changes)
 ```
 
+Watch a single key with `subscribe(key, callback)` when you only need targeted
+real-time notifications:
+
+```python
+def on_config_change(old_value, new_value, timestamp):
+    print(f"config changed from {old_value} to {new_value}")
+
+cm.subscribe('config.timeout', on_config_change)
+
+cm['config.timeout'] = 30  # Triggers subscriber
+cm['other.setting'] = True  # Does not trigger subscriber
+
+cm.unsubscribe('config.timeout', on_config_change)
+```
+
 **Use Cases**: Audit logging, CDC (change data capture), replication, debugging
 
 ---
@@ -1059,9 +1074,31 @@ cm.remove_change_callback(my_callback)
 
 ---
 
+#### `subscribe(key, callback)`
+
+Register a callback for changes to one specific key. The callback receives
+`old_value`, `new_value`, and `timestamp`.
+
+```python
+cm.subscribe('app.config', lambda old, new, ts: print(new))
+```
+
+---
+
+#### `unsubscribe(key, callback) -> bool`
+
+Remove a key-specific callback. Returns `True` when the callback was found and
+removed.
+
+```python
+cm.unsubscribe('app.config', my_callback)
+```
+
+---
+
 ## 🧪 Testing
 
-ChronoMap has **134 comprehensive tests** with **97% code coverage**.
+ChronoMap has **141 comprehensive tests** with **97% code coverage**.
 
 ```bash
 # Run all tests
