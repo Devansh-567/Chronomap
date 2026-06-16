@@ -830,6 +830,25 @@ value = cm.get('key', strict=True)  # Raises ChronoMapKeyError if missing
 
 ---
 
+#### `get_or_set(key, default_factory, ttl=None)`
+
+Return the current value if the key exists, or call a factory, store the result, and return it.
+
+```python
+value = cm.get_or_set('config', lambda: load_config_from_disk())
+session = cm.get_or_set('session:abc', lambda: create_session(), ttl=3600)
+```
+
+**Parameters:**
+
+- `key` - Key to retrieve or initialize
+- `default_factory` - Zero-argument callable used only when the key is missing or expired
+- `ttl` - Optional seconds until the newly stored value expires
+
+**Returns:** Existing or newly stored value
+
+---
+
 #### `delete(key) -> bool`
 
 Delete all history for a key.

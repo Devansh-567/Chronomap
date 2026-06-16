@@ -827,6 +827,85 @@ class ChronoMap:
         finally:
             self._release_read()
 
+    def get_or_set(
+        self,
+        key: Any,
+        default_factory: Callable[[], Any],
+        ttl: Optional[float] = None
+    ) -> Any:
+        """
+        Return the current value for a key, or create and store it if missing.
+
+        The default factory is called only when the key is missing or expired.
+
+        Args:
+            key: The key to retrieve or initialize.
+            default_factory: Zero-argument callable that produces the value.
+            ttl: Optional time-to-live in seconds for newly stored values.
+
+        Returns:
+            The existing or newly stored value.
+
+        Example:
+            >>> cm = ChronoMap()
+            >>> value = cm.get_or_set('config', lambda: load_config())
+        """
+        self._validate_key(key)
+        if not callable(default_factory):
+            raise ChronoMapTypeError("default_factory must be callable")
+        if ttl is not None and ttl <= 0:
+            raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
+
+        ts = self._current_time()
+        self._validate_timestamp(ts)
+
+        self._acquire_write()
+        try:
+            if self._is_expired(key):
+                if key in self._store:
+                    del self._store[key]
+                if key in self._ttl:
+                    del self._ttl[key]
+                if self._cache:
+                    self._cache.invalidate(key)
+
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats['reads'] += 1
+                return versions[-1][1]
+
+            value = default_factory()
+            self._store[key] = [(ts, value)]
+
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+
+            self._auto_prune(key)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._memory_monitor.check_memory(self._store, self._ttl)
+
+            self._stats['writes'] += 1
+            logger.debug("GET_OR_SET key=%r value=%r ttl=%s", key, value, ttl)
+            self._trigger_change_callbacks(key, None, value, ts)
+            return value
+        finally:
+            self._release_write()
+
+    def get_or_default(
+        self,
+        key: Any,
+        default: Any,
+        ttl: Optional[float] = None
+    ) -> Any:
+        """
+        Return the current value for a key, or store a default value if missing.
+
+        If default is callable, it is treated as a zero-argument factory.
+        """
+        factory = default if callable(default) else lambda: default
+        return self.get_or_set(key, factory, ttl=ttl)
+
     def delete(self, key: Any) -> bool:
         """Delete all history of a key."""
         self._acquire_write()
@@ -1954,6 +2033,70 @@ class AsyncChronoMap:
             
             self._stats['reads'] += 1
             return versions[idx][1]
+
+    async def get_or_set(
+        self,
+        key: Any,
+        default_factory: Callable[[], Any],
+        ttl: Optional[float] = None
+    ) -> Any:
+        """Return the current value for a key, or create and store it if missing."""
+        self._validate_key(key)
+        if not callable(default_factory):
+            raise ChronoMapTypeError("default_factory must be callable")
+        if ttl is not None and ttl <= 0:
+            raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
+
+        ts = self._current_time()
+
+        async with self._lock:
+            if self._is_expired(key):
+                if key in self._store:
+                    del self._store[key]
+                if key in self._ttl:
+                    del self._ttl[key]
+
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats['reads'] += 1
+                return versions[-1][1]
+
+            value = default_factory()
+            if asyncio.iscoroutine(value):
+                value = await value
+
+            self._store[key] = [(ts, value)]
+
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+
+            self._auto_prune(key)
+            self._stats['writes'] += 1
+
+            callbacks = list(self._change_callbacks)
+            key_callbacks = list(self._key_subscribers.get(key, []))
+            for callback in callbacks:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(key, None, value, ts)
+                else:
+                    callback(key, None, value, ts)
+            for callback in key_callbacks:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(None, value, ts)
+                else:
+                    callback(None, value, ts)
+
+            return value
+
+    async def get_or_default(
+        self,
+        key: Any,
+        default: Any,
+        ttl: Optional[float] = None
+    ) -> Any:
+        """Return the current value for a key, or store a default value if missing."""
+        factory = default if callable(default) else lambda: default
+        return await self.get_or_set(key, factory, ttl=ttl)
     
     async def delete(self, key: Any) -> bool:
         """Delete a key asynchronously."""
