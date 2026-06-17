@@ -769,6 +769,39 @@ class TestUtilityMethods:
         assert len(history) == 2
         assert history[0] == (100, 'v1')
 
+    def test_get_or_set_returns_existing_without_calling_factory(self):
+        cm = ChronoMap()
+        cm.put('config', {'source': 'stored'})
+        calls = []
+
+        value = cm.get_or_set('config', lambda: calls.append('called') or {'source': 'factory'})
+
+        assert value == {'source': 'stored'}
+        assert calls == []
+        assert len(cm.history('config')) == 1
+
+    def test_get_or_set_stores_missing_factory_value(self):
+        cm = ChronoMap()
+
+        value = cm.get_or_set('config', lambda: {'source': 'factory'})
+
+        assert value == {'source': 'factory'}
+        assert cm.get('config') == {'source': 'factory'}
+        assert len(cm.history('config')) == 1
+
+    def test_get_or_set_passes_ttl_for_new_value(self):
+        cm = ChronoMap(enable_ttl_cleanup=False)
+        assert cm.get_or_set('session', lambda: 'token', ttl=0.1) == 'token'
+        time.sleep(0.15)
+
+        assert cm.get_or_set('session', lambda: 'new-token') == 'new-token'
+
+    def test_get_or_default_accepts_plain_default_value(self):
+        cm = ChronoMap()
+
+        assert cm.get_or_default('feature', False) is False
+        assert cm.get('feature') is False
+
     def test_clear(self):
         cm = ChronoMap()
         cm.put_many({'a': 1, 'b': 2})
@@ -1482,6 +1515,18 @@ class TestAsyncChronoMap:
         latest = await cm.latest()
         assert set(keys) == {'a', 'b'}
         assert latest == {'a': 1, 'b': 2}
+
+    @pytest.mark.asyncio
+    async def test_async_get_or_set(self):
+        cm = AsyncChronoMap()
+        calls = []
+
+        missing = await cm.get_or_set('config', lambda: calls.append('called') or 'created')
+        existing = await cm.get_or_set('config', lambda: calls.append('called-again') or 'ignored')
+
+        assert missing == 'created'
+        assert existing == 'created'
+        assert calls == ['called']
     
     @pytest.mark.asyncio
     async def test_async_with_max_history(self):
