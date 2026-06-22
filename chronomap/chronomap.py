@@ -1404,6 +1404,28 @@ class ChronoMap:
         finally:
             self._release_read()
 
+    def keys_with_history_count(self) -> Dict[Any, int]:
+        """
+        Return each non-expired key mapped to its stored version count.
+
+        Example:
+            >>> cm = ChronoMap()
+            >>> cm.put('a', 1, timestamp=1)
+            >>> cm.put('a', 2, timestamp=2)
+            >>> cm.put('b', 99, timestamp=1)
+            >>> cm.keys_with_history_count()
+            {'a': 2, 'b': 1}
+        """
+        self._acquire_read()
+        try:
+            return {
+                key: len(versions)
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            }
+        finally:
+            self._release_read()
+
     def clear(self) -> None:
         """Clear all data from the map."""
         self._acquire_write()
@@ -2159,6 +2181,15 @@ class AsyncChronoMap:
                 if v:
                     result[k] = v[-1][1]
             return result
+
+    async def keys_with_history_count(self) -> Dict[Any, int]:
+        """Return each non-expired key mapped to its stored version count."""
+        async with self._lock:
+            return {
+                key: len(versions)
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            }
     
     def get_stats(self) -> Dict[str, int]:
         """Get operation statistics."""
