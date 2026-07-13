@@ -25,6 +25,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   unmodified — the public import surface didn't change.
 - `tests/test_basic.py` — a small additional smoke-test file, mainly
   useful as the home for the `merge()` regression test below.
+- `.github/workflows/tests.yml` — runs the full suite on Python 3.8–3.12
+  on every push/PR to `main`, plus a `black --check` formatting job.
+- `.github/dependabot.yml` — keeps GitHub Actions and pip dependencies
+  from going stale.
+- Applied `black` formatting to the whole package (`src/`, `tests/`) so
+  the new formatting CI job actually passes on the first commit instead
+  of failing immediately.
 
 ### Fixed
 - **`ChronoMap.merge(strategy='timestamp')` was broken.** The out-of-order

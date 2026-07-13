@@ -163,7 +163,9 @@ class AsyncChronoMap:
             self._stats["reads"] += 1
             return versions[idx][1]
 
-    async def get_or_set(self, key: Any, default_factory: Callable[[], Any], ttl: Optional[float] = None) -> Any:
+    async def get_or_set(
+        self, key: Any, default_factory: Callable[[], Any], ttl: Optional[float] = None
+    ) -> Any:
         self._validate_key(key)
         if not callable(default_factory):
             raise ChronoMapTypeError("default_factory must be callable")
