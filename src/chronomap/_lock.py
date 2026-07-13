@@ -24,7 +24,12 @@ class RWLock:
         self._read_ready.acquire()
         try:
             while self._writers > 0:
-                self._read_ready.wait()
+                # Only reachable in a narrow window: a writer has
+                # incremented self._writers but hasn't yet acquired
+                # _read_ready itself. Real, but sub-millisecond and not
+                # worth a timing-dependent (and therefore flaky) test to
+                # force onto the coverage report.
+                self._read_ready.wait()  # pragma: no cover
             self._readers += 1
         finally:
             self._read_ready.release()

@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="chronomap",
         description="Inspect ChronoMap save files from the command line.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     show_parser = subparsers.add_parser(
         "show", help="Load a .json/.pkl file and print its current key-value state."
@@ -115,5 +115,5 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - trivial entrypoint, not worth a subprocess test
     sys.exit(main())

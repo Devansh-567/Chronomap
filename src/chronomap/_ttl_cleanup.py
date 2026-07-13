@@ -33,7 +33,16 @@ class TTLCleanupThread:
 
     def stop(self) -> None:
         self.stop_event.set()
-        if self.thread is not None:
+        # __del__ on the owning ChronoMap can run *on this background thread*:
+        # _cleanup_loop briefly holds the only strong reference to the map
+        # (via chronomap_ref()), so if the main thread drops its reference
+        # at just the wrong moment, `del cm` below is what takes the
+        # refcount to zero — on this thread. That triggers ChronoMap.__del__,
+        # which calls stop(), which would otherwise try to join() the
+        # thread it's currently running on and raise RuntimeError. Skip the
+        # join in that case; the loop is already exiting on its own since
+        # stop_event is set.
+        if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout=2.0)
         logger.debug("TTL cleanup thread stopped")
 
