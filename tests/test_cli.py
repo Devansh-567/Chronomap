@@ -57,7 +57,7 @@ class TestCLIHelpers:
 
     def test_format_timestamp(self):
         """Test format_timestamp formats Unix epoch to localized date string correctly."""
-        expected = datetime.fromtimestamp(0).strftime('%Y-%m-%d %H:%M:%S')
+        expected = datetime.fromtimestamp(0).strftime("%Y-%m-%d %H:%M:%S")
         assert format_timestamp(0) == expected
 
     def test_colorize(self):

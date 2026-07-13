@@ -633,7 +633,9 @@ class ChronoMap:
         finally:
             self._release_read()
 
-    def get_keys_by_value(self, value: Any, timestamp: Optional[Union[float, str, datetime]] = None) -> List[Any]:
+    def get_keys_by_value(
+        self, value: Any, timestamp: Optional[Union[float, str, datetime]] = None
+    ) -> List[Any]:
         """All keys whose value at `timestamp` equals `value`."""
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._acquire_read()
@@ -1074,7 +1076,9 @@ class ChronoMap:
         logger.debug("SAVE_JSON to %s", file_path)
 
     @classmethod
-    def load_json(cls, file_path: Union[str, Path], debug: bool = False, use_rwlock: bool = True, **kwargs) -> "ChronoMap":
+    def load_json(
+        cls, file_path: Union[str, Path], debug: bool = False, use_rwlock: bool = True, **kwargs
+    ) -> "ChronoMap":
         path = Path(file_path)
         with open(path, "r") as f:
             json_data = json.load(f)
@@ -1098,7 +1102,9 @@ class ChronoMap:
         logger.debug("SAVE_PICKLE to %s (compressed=%s)", file_path, compress)
 
     @classmethod
-    def load_pickle(cls, file_path: Union[str, Path], debug: bool = False, use_rwlock: bool = True, **kwargs) -> "ChronoMap":
+    def load_pickle(
+        cls, file_path: Union[str, Path], debug: bool = False, use_rwlock: bool = True, **kwargs
+    ) -> "ChronoMap":
         path = Path(file_path)
         with open(path, "rb") as f:
             data_bytes = f.read()
