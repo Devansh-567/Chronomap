@@ -35,11 +35,6 @@ dev = [
     "mypy>=1.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/Devansh-567/Chronomap"
-Issues = "https://github.com/Devansh-567/Chronomap/issues"
-Changelog = "https://github.com/Devansh-567/Chronomap/blob/main/CHANGELOG.md"
-
 [tool.setuptools.dynamic]
 version = { attr = "chronomap._version.__version__" }
 

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Context manager for automatic rollback on exception.
 
 Split into its own module for import clarity, but it's tightly coupled to

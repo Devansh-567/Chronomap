@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """
 Comprehensive unit tests for ChronoMap.
 
@@ -48,16 +52,16 @@ class TestBasicOperations:
 
     def test_put_with_datetime_string(self):
         cm = ChronoMap()
-        cm.put("key", "value1", timestamp="2025-01-01T00:00:00")
-        cm.put("key", "value2", timestamp="2025-01-02T00:00:00")
+        cm.put("key", "value1", timestamp="2026-01-01T00:00:00")
+        cm.put("key", "value2", timestamp="2026-01-02T00:00:00")
 
-        dt1 = datetime(2025, 1, 1, 12, 0, 0)
+        dt1 = datetime(2026, 1, 1, 12, 0, 0)
         assert cm.get("key", timestamp=dt1) == "value1"
 
     def test_put_with_datetime_object(self):
         cm = ChronoMap()
-        dt1 = datetime(2025, 1, 1, 0, 0, 0)
-        dt2 = datetime(2025, 1, 2, 0, 0, 0)
+        dt1 = datetime(2026, 1, 1, 0, 0, 0)
+        dt2 = datetime(2026, 1, 2, 0, 0, 0)
 
         cm.put("key", "value1", timestamp=dt1)
         cm.put("key", "value2", timestamp=dt2)
@@ -1294,7 +1298,7 @@ class TestHistoryManagement:
     def test_prune_history_datetime_string(self):
         cm = ChronoMap()
         dt_old = datetime(2024, 1, 1)
-        dt_new = datetime(2025, 1, 1)
+        dt_new = datetime(2026, 1, 1)
         cm.put("key", "old", timestamp=dt_old)
         cm.put("key", "new", timestamp=dt_new)
         removed = cm.prune_history("key", older_than="2024-06-01T00:00:00")

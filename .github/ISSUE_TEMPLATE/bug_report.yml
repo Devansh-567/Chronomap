@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in ChronoMap doesn't behave the way it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        A short script that reproduces it. "It doesn't work" without a
+        snippet is hard to act on — see CONTRIBUTING.md.
+      render: python
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ChronoMap version
+      description: Output of `python -c "import chronomap; print(chronomap.__version__)"`
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Traceback, OS, whether it's async/sync, etc.

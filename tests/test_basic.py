@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Smoke tests for the package split.
 
 This is not the full test suite yet — the original repo mentions ~140

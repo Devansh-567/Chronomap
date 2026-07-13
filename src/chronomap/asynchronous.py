@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Asyncio version of ChronoMap.
 
 Deliberately a separate, simpler implementation rather than a wrapper
