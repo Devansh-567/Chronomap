@@ -43,7 +43,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   regression test (`test_merge_timestamp_strategy_does_not_crash_on_out_of_order_writes`).
 
 ### Current test status
-177 tests passing, 91% coverage (`pytest tests/ --cov=chronomap`).
+246 tests passing, 100% coverage (`pytest tests/ --cov=chronomap`). One
+line in `_lock.py` is marked `# pragma: no cover` rather than covered
+with a timing-dependent test — see the comment there for why.
+
+### Fixed (found while closing coverage gaps)
+- **Real race condition in the TTL cleanup thread.** `_cleanup_loop`
+  briefly holds the only strong reference to its owning `ChronoMap` (via
+  the weakref). If the main thread drops its own reference at exactly
+  that moment, `del cm` inside the loop is what takes the refcount to
+  zero — *on the background thread*. That runs `ChronoMap.__del__`
+  there, which calls `stop()`, which used to try to `.join()` the
+  thread it was currently executing on and raise `RuntimeError: cannot
+  join current thread`. `stop()` now skips the join when it's already
+  being called from the thread it would join. Regression test:
+  `test_ttl_cleanup_thread_stop_does_not_crash_when_del_runs_on_itself`.
+- **Dead code in `cli.py`.** The subparser was `required=True`, which
+  means argparse itself exits before the code ever reaches the
+  "no subcommand given" fallback (`parser.print_help(); return 1`) —
+  so that branch was unreachable and untested. Changed to handle the
+  missing-subcommand case in our own code instead of leaving
+  argparse's default (also gives a more consistent error path).
+
+### Added (coverage work)
+- `tests/test_coverage_gaps.py` — targets branches the main suites
+  don't reach: `strict=True` paths only reachable via direct private-method
+  calls, double-checked-expiry race guards, TTL cleanup thread internals,
+  RWLock contention, and the two bugs above.
 
 ## [2.1.0] - 2025-10-21
 - Last release under the single-file layout. See git history for details

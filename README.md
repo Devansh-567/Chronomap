@@ -80,7 +80,7 @@ Full method-by-method reference lives in [`docs/API.md`](docs/API.md).
 
 This project is in the middle of being restructured from a single-file
 script into a proper package (see `CHANGELOG.md`). As of this restructure:
-**177 tests passing, 91% coverage** — reproducible yourself with
+**246 tests passing, 100% coverage** — reproducible yourself with
 `pytest tests/ --cov=chronomap`, not a claim to take on faith. It hasn't
 been through a broad external review yet — issues and PRs pointing out
 rough edges are genuinely welcome, not just a formality.
