@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Small thread-safe LRU cache used internally by ChronoMap for reads.
 
 This isn't meant to be a general-purpose cache — it's shaped specifically

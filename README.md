@@ -1,7 +1,5 @@
 # ChronoMap
 
-[![Tests](https://github.com/Devansh-567/Chronomap/actions/workflows/tests.yml/badge.svg)](https://github.com/Devansh-567/Chronomap/actions/workflows/tests.yml)
-
 A thread-safe, time-versioned key-value store for Python. Every write is
 kept, not just overwritten, so you can ask "what was this key at time T"
 as well as "what is it now."

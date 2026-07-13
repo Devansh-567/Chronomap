@@ -3,22 +3,13 @@
 Thanks for considering it. This is a small project, so the process is
 intentionally light.
 
-## Setup
-
-```bash
-git clone https://github.com/Devansh-567/Chronomap.git
-cd Chronomap
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
 ## Before opening a PR
 
 - Add or update a test for whatever you changed. If you fixed a bug,
   a regression test that fails on `main` and passes on your branch is
   the single most useful thing you can include.
 - Run `pytest tests/ -v` and `black --check src/` locally.
-- Keep PRs scoped to one thing. A 500-line PR that fixes a bug *and*
+- Keep PRs scoped to one thing. A 500-line PR that fixes a bug _and_
   reformats three unrelated files is much harder to review than two
   small PRs.
 
@@ -33,7 +24,7 @@ pytest tests/ -v
 ## Code style
 
 - Type hints on public methods.
-- Docstrings that explain *why*, not just restate the signature.
+- Docstrings that explain _why_, not just restate the signature.
 - No new required dependencies for the core package — optional
   dependencies (like pandas) belong behind `pip install chronomap[extra]`.
 

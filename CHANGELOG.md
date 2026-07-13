@@ -5,7 +5,29 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Copyright/license header on every file under `src/` and `tests/`:
+  `Copyright (c) 2026 Devansh Singh, ChronoMap contributors`, SPDX
+  identifier, and a link back to the repo.
+- Community health files: `SECURITY.md`, issue templates
+  (`bug_report.yml`, `feature_request.yml`), `PULL_REQUEST_TEMPLATE.md`,
+  and `CODEOWNERS`.
+- `.github/workflows/monthly-release.yml` — scheduled monthly
+  automation that cuts a dated GitHub Release (using GitHub's native
+  contributor/new-contributor notes) and opens a review PR that adds a
+  matching, name-free `CHANGELOG.md` entry and bumps `_version.py`.
+- `scripts/build_changelog_entry.py` — builds the name-free CHANGELOG
+  section from merged PRs in a date window, grouped by label
+  (Added/Changed/Fixed/Documentation/Maintenance).
+
 ### Changed
+
+- `LICENSE` copyright line updated to `Devansh Singh, ChronoMap
+contributors` to match the new file headers.
+- `.github/workflows/tests.yml` — added a concurrency group (cancels
+  stale runs), explicit read-only `permissions`, coverage upload, and a
+  new `mypy` type-check job (non-blocking for now).
 - Split the single-file `chronomap.py` module into a proper package
   (`src/chronomap/`): `core.py`, `asynchronous.py`, `_cache.py`,
   `_lock.py`, `_memory.py`, `_ttl_cleanup.py`, `_snapshot.py`,
@@ -15,6 +37,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `datetime.now(timezone.utc)`.
 
 ### Added
+
 - `chronomap/cli.py` — this was referenced in the old project structure
   and README but didn't exist in the code I had to work with. Written
   from scratch to satisfy the existing `tests/test_cli.py`: `parse_value`,
@@ -34,28 +57,31 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   of failing immediately.
 
 ### Fixed
+
 - **`ChronoMap.merge(strategy='timestamp')` was broken.** The out-of-order
   insert branch referenced an undefined variable (`value` instead of
-  `val`) and inserted into the wrong list (`versions`, the *source* data
+  `val`) and inserted into the wrong list (`versions`, the _source_ data
   from the other map, instead of `target_versions`). Any merge where a
   key's timestamps interleaved out of order would raise `NameError` and
   could corrupt the source map's history in the process. Added a
   regression test (`test_merge_timestamp_strategy_does_not_crash_on_out_of_order_writes`).
 
 ### Current test status
+
 246 tests passing, 100% coverage (`pytest tests/ --cov=chronomap`). One
 line in `_lock.py` is marked `# pragma: no cover` rather than covered
 with a timing-dependent test — see the comment there for why.
 
 ### Fixed (found while closing coverage gaps)
+
 - **Real race condition in the TTL cleanup thread.** `_cleanup_loop`
   briefly holds the only strong reference to its owning `ChronoMap` (via
   the weakref). If the main thread drops its own reference at exactly
   that moment, `del cm` inside the loop is what takes the refcount to
-  zero — *on the background thread*. That runs `ChronoMap.__del__`
+  zero — _on the background thread_. That runs `ChronoMap.__del__`
   there, which calls `stop()`, which used to try to `.join()` the
   thread it was currently executing on and raise `RuntimeError: cannot
-  join current thread`. `stop()` now skips the join when it's already
+join current thread`. `stop()` now skips the join when it's already
   being called from the thread it would join. Regression test:
   `test_ttl_cleanup_thread_stop_does_not_crash_when_del_runs_on_itself`.
 - **Dead code in `cli.py`.** The subparser was `required=True`, which
@@ -66,11 +92,13 @@ with a timing-dependent test — see the comment there for why.
   argparse's default (also gives a more consistent error path).
 
 ### Added (coverage work)
+
 - `tests/test_coverage_gaps.py` — targets branches the main suites
   don't reach: `strict=True` paths only reachable via direct private-method
   calls, double-checked-expiry race guards, TTL cleanup thread internals,
   RWLock contention, and the two bugs above.
 
-## [2.1.0] - 2025-10-21
+## [2.1.0] - 2026-10-21
+
 - Last release under the single-file layout. See git history for details
   predating this changelog.

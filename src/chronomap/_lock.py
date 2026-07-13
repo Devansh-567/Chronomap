@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """A basic readers-writer lock.
 
 Not the fastest possible implementation (a semaphore-based approach would

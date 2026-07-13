@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """
 Unit tests for ChronoMap CLI helper functions and commands.
 """

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Tests targeting the branches the main test suites don't reach.
 
 These exist purely to close coverage gaps found after wiring in the real
@@ -538,7 +542,7 @@ async def test_async_debug_mode_sets_log_level():
 @pytest.mark.asyncio
 async def test_async_put_with_iso_string_timestamp():
     cm = AsyncChronoMap()
-    await cm.put("k", "v", timestamp="2025-01-01T00:00:00")
+    await cm.put("k", "v", timestamp="2026-01-01T00:00:00")
     assert await cm.get("k") == "v"
 
 
@@ -554,7 +558,7 @@ async def test_async_put_with_datetime_object():
     from datetime import datetime
 
     cm = AsyncChronoMap()
-    await cm.put("k", "v", timestamp=datetime(2025, 1, 1))
+    await cm.put("k", "v", timestamp=datetime(2026, 1, 1))
     assert await cm.get("k") == "v"
 
 

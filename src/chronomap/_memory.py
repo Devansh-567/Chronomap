@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Optional memory-usage guardrail.
 
 This is a rough estimate (sys.getsizeof on the top-level containers), not

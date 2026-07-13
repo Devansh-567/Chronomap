@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Command-line interface for ChronoMap.
 
 Right now this only supports inspecting a saved .json/.pkl file:

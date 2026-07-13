@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Exception hierarchy for ChronoMap.
 
 Kept in their own module so other packages (CLI, examples, tests) can

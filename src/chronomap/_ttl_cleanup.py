@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Devansh Singh, ChronoMap contributors
+# SPDX-License-Identifier: MIT
+
+
 """Background daemon thread that periodically clears expired keys.
 
 Holds a weakref to the owning ChronoMap so it never keeps the map alive
