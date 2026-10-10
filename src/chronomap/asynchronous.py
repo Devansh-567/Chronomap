@@ -102,6 +102,13 @@ class AsyncChronoMap:
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
 
         async with self._lock:
+            # An expired key is invisible to readers, so a write to it must
+            # start clean; otherwise the stale TTL makes the new value
+            # expire instantly.
+            if self._is_expired(key):
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+
             old_value = None
             if key in self._store and self._store[key]:
                 old_value = self._store[key][-1][1]
