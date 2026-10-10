@@ -67,6 +67,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   of failing immediately.
 
 ### Fixed
+- **Writing to a key whose TTL had expired produced an invisible value.**
+  `put()` / `put_many()` (and `AsyncChronoMap.put()`) left the stale TTL
+  entry in place, so the freshly written value was immediately treated as
+  expired: `get()` returned `None` and `key in cm` was `False`. Writes to an
+  expired key now start from a clean slate, matching what `get_or_set()`
+  already did.
 - **`ChronoMap.merge(strategy='timestamp')` was broken.** The out-of-order
   insert branch referenced an undefined variable (`value` instead of
   `val`) and inserted into the wrong list (`versions`, the *source* data

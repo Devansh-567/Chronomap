@@ -159,6 +159,20 @@ class ChronoMap:
             return False
         return self._current_time() >= self._ttl[key]
 
+    def _purge_if_expired(self, key: Any) -> None:
+        """Drop an expired key's history and TTL so a fresh write starts clean.
+
+        Expired keys are invisible to readers (get/history/keys all treat them
+        as missing), so a write to one must behave like a write to a brand-new
+        key. Without this, the stale ``_ttl`` entry outlives the old data and
+        the *new* value is born already expired. Caller must hold the write lock.
+        """
+        if self._is_expired(key):
+            self._store.pop(key, None)
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+
     def _auto_prune(self, key: Any) -> None:
         if self._max_history is None:
             return
@@ -283,6 +297,8 @@ class ChronoMap:
 
         self._acquire_write()
         try:
+            self._purge_if_expired(key)
+
             old_value = None
             if key in self._store and self._store[key]:
                 old_value = self._store[key][-1][1]
@@ -545,6 +561,7 @@ class ChronoMap:
         try:
             for key, value in items.items():
                 self._validate_key(key)
+                self._purge_if_expired(key)
 
                 old_value = None
                 if key in self._store and self._store[key]:
