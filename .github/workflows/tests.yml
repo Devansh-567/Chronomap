@@ -109,6 +109,10 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --cov=chronomap --cov-report=term-missing --cov-report=xml
 
+      - name: Enforce 100% coverage
+        if: matrix.python-version == '3.12'
+        run: coverage report --fail-under=100
+
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v7
