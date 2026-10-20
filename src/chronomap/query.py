@@ -535,11 +535,7 @@ class VersionQuery:
         ]
 
     def keys(self) -> List[Any]:
-        seen = []
-        for key, _, _ in self._rows:
-            if key not in seen:
-                seen.append(key)
-        return seen
+        return list(dict.fromkeys(key for key, _, _ in self._rows))
 
     def values(self) -> List[Any]:
         return [value for _, _, value in self._rows]
