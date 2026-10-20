@@ -600,6 +600,12 @@ class VersionQuery:
             raise QueryError("Cannot compute mean of an empty version query")
         return mean(values)
 
+    def median(self) -> Any:
+        values = self.values()
+        if not values:
+            raise QueryError("Cannot compute median of an empty version query")
+        return median(values)
+
     def min(self) -> Any:
         values = self.values()
         if not values:
