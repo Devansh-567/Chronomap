@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 class LRUCache:
@@ -20,12 +20,12 @@ class LRUCache:
 
     def __init__(self, capacity: int = 1000) -> None:
         self.capacity = capacity
-        self.cache: "OrderedDict[Tuple[Any, Any], Any]" = OrderedDict()
+        self.cache: "OrderedDict[Tuple[Any, Optional[float]], Any]" = OrderedDict()
         self.lock = threading.Lock()
         self.hits = 0
         self.misses = 0
 
-    def get(self, key: Tuple[Any, float], default: Any = None) -> Any:
+    def get(self, key: Tuple[Any, Optional[float]], default: Any = None) -> Any:
         with self.lock:
             if key in self.cache:
                 self.cache.move_to_end(key)
@@ -34,7 +34,7 @@ class LRUCache:
             self.misses += 1
             return default
 
-    def put(self, key: Tuple[Any, float], value: Any) -> None:
+    def put(self, key: Tuple[Any, Optional[float]], value: Any) -> None:
         with self.lock:
             if key in self.cache:
                 self.cache.move_to_end(key)
