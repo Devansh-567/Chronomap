@@ -576,6 +576,31 @@ class ChronoMap:
         finally:
             self._release_write()
 
+    def popitem(self) -> Tuple[Any, Any]:
+        """Remove and return the most recently inserted live key/value pair."""
+        self._acquire_write()
+        try:
+            for key in reversed(list(self._store)):
+                if self._is_expired(key):
+                    self._purge_if_expired(key)
+                    continue
+                versions = self._store.get(key, [])
+                if not versions:
+                    continue
+
+                value = versions[-1][1]
+                del self._store[key]
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                self._stats["deletes"] += 1
+                logger.debug("POPITEM key=%r value=%r", key, value)
+                return key, value
+
+            raise ChronoMapKeyError("popitem(): ChronoMap is empty")
+        finally:
+            self._release_write()
+
     def delete(self, key: Any) -> bool:
         """Delete all history for a key. Returns True if a live key was removed."""
         self._validate_key(key)
