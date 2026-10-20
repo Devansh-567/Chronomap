@@ -1203,6 +1203,10 @@ class AsyncChronoMap:
         path = Path(file_path)
         text = await cls._run_blocking(path.read_text, encoding="utf-8")
         json_data = json.loads(text)
+        if not isinstance(json_data, dict):
+            raise ChronoMapTypeError("JSON save file must contain an object")
+        if "store" not in json_data:
+            raise ChronoMapValueError("JSON save file is missing required 'store' section")
         data = {
             "store": json_data["store"],
             "ttl": json_data.get("ttl", {}),

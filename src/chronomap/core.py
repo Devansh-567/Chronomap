@@ -1383,7 +1383,7 @@ class ChronoMap:
             "version": data.get("version"),
             "max_history": data.get("max_history"),
         }
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(json_data, f, indent=2)
         logger.debug("SAVE_JSON to %s", file_path)
 
@@ -1392,8 +1392,12 @@ class ChronoMap:
         cls, file_path: Union[str, Path], debug: bool = False, use_rwlock: bool = True, **kwargs
     ) -> "ChronoMap":
         path = Path(file_path)
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             json_data = json.load(f)
+        if not isinstance(json_data, dict):
+            raise ChronoMapTypeError("JSON save file must contain an object")
+        if "store" not in json_data:
+            raise ChronoMapValueError("JSON save file is missing required 'store' section")
         data = {
             "store": json_data["store"],
             "ttl": json_data.get("ttl", {}),
