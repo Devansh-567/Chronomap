@@ -123,8 +123,8 @@ object.
 
 ## Status
 
-The project has 250+ tests and 100% line coverage across the package.
-CI runs the suite on Python 3.8 through 3.12 and checks formatting with
+The project has 650+ tests and 100% line coverage across the package.
+CI runs the suite on Python 3.8 through 3.13 and checks formatting with
 `black`. Reproduce the coverage locally with:
 
 ```bash
