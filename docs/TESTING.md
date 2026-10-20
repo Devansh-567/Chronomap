@@ -54,7 +54,7 @@ Run with the coverage report used by CI:
 pytest tests/ --cov=chronomap --cov-report=term-missing
 ```
 
-The current `main` branch collects **254 tests** and reports **100% statement
+The current `main` branch collects **653 tests** and reports **100% statement
 coverage**. The numbers will grow as features are added; the expectation is
 that new behavior comes with tests and does not lower coverage.
 
@@ -84,7 +84,12 @@ pytest tests/test_basic.py::test_time_travel -vv
 | `tests/test_basic.py` | Small smoke tests for core reads, writes, history, TTL, snapshots, and async basics. |
 | `tests/test_chronomap.py` | The main behavior suite: storage, cache, pruning, TTL, memory, batch operations, queries, snapshots, merge, magic methods, persistence, concurrency, async, and integration. |
 | `tests/test_coverage_gaps.py` | Edge and defensive branches: cache eviction, lock ordering, memory estimate edge cases, cleanup-thread lifecycle, strict reads, invalid inputs, expiry races, merge TTLs, async validation, and CLI entry paths. |
+| `tests/test_core_correctness.py` | Regression coverage for validation, batch operations, delete/prune semantics, callback behavior, locking, serialization, and merge/diff edge cases. |
+| `tests/test_async_parity.py` | `AsyncChronoMap` parity: validation, cache, batch/conditional operations, history, TTL, snapshots, callbacks, stats, and persistence. |
 | `tests/test_cli.py` | CLI parsing, formatting, color helpers, and file display. |
+| `tests/test_cli_commands.py` | Expanded CLI commands: show/get/history/put/delete/keys/stats/prune/diff/merge, JSON output, and file handling. |
+| `tests/test_persistence.py` | Archive formats, typed JSON codec, pickle, compression, inspection, TTL preservation, and corruption handling. |
+| `tests/test_query.py` | Fluent value queries, version queries, filters, reducers, and time-travel semantics. |
 
 Tests use pytest fixtures such as `tmp_path` and `capsys`, not a project-wide
 fixture module. Each test creates its own map, which keeps tests independent
@@ -96,18 +101,20 @@ and makes ordering irrelevant.
 
 | Marker | Meaning | Current selection |
 | --- | --- | --- |
-| `core` | Core read/write/query/merge/history behavior | 149 |
-| `cache` | `LRUCache` behavior | 8 |
+| `core` | Core read/write/query/merge/history behavior | 234 |
+| `cache` | `LRUCache` behavior | 10 |
 | `lock` | `RWLock` and concurrency behavior | 5 |
 | `memory` | Memory monitor and size estimation | 8 |
-| `ttl` | TTL expiry and cleanup thread | 20 |
-| `snapshot` | Snapshot, rollback, and diff | 13 |
-| `async_map` | `AsyncChronoMap` behavior | 12 |
-| `cli` | CLI behavior | 16 |
+| `ttl` | TTL expiry and cleanup thread | 55 |
+| `snapshot` | Snapshot, rollback, and diff | 23 |
+| `async_map` | `AsyncChronoMap` behavior | 96 |
+| `cli` | CLI behavior | 77 |
+| `persistence` | Archive and codec behavior | 88 |
+| `query` | Fluent value and version queries | 59 |
 
-These are selection sizes, not a partition: markers also drive the CI
-subsystem job, and some async tests carry only `asyncio`, so the counts do not
-add up to the full collection.
+These are selection sizes, not a partition: markers drive the CI subsystem
+job, and a test can carry more than one semantic marker, so the counts can
+overlap and do not add up to the full collection.
 
 Run one subsystem:
 
@@ -120,7 +127,7 @@ pytest tests/ -v -m "snapshot or lock"
 When adding a new area, register its marker in `pyproject.toml` and add a
 matching path filter in `.github/workflows/tests.yml`. Existing filters map
 source files to `core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
-`async_map`, and `cli`.
+`async_map`, `persistence`, `cli`, and `query`.
 
 ## Async tests
 
@@ -236,10 +243,9 @@ Run mypy:
 mypy src/chronomap --ignore-missing-imports
 ```
 
-On the current `main` branch, mypy reports 16 pre-existing errors in
-`core.py` and `_snapshot.py`. The CI type-check step is marked
-`continue-on-error: true`, so it reports but does not fail the build. New code
-should not add errors; run mypy on the files you touch and keep them clean.
+The current `main` branch is clean under mypy. The CI type-check step is still
+marked `continue-on-error: true`, so it reports but does not fail the build.
+New code should stay clean; run mypy on the files you touch.
 
 ## What CI runs
 
