@@ -21,8 +21,21 @@ from .asynchronous import AsyncChronoMap
 from .core import ChronoMap
 from ._cache import LRUCache
 from ._lock import RWLock
+from .persistence import (
+    ArchiveInfo,
+    CodecError,
+    CorruptArchiveError,
+    PersistenceError,
+    UnsupportedFormatError,
+    dump,
+    dumps,
+    inspect,
+    load,
+    loads,
+)
 from ._snapshot import SnapshotContext
 from ._version import __version__
+from .query import Query, QueryError, VersionQuery, query, versions
 from .exceptions import (
     ChronoMapError,
     ChronoMapKeyError,
@@ -39,8 +52,23 @@ __all__ = [
     "ChronoMapTypeError",
     "ChronoMapValueError",
     "ChronoMapMemoryError",
+    "Query",
+    "VersionQuery",
+    "QueryError",
+    "query",
+    "versions",
     "SnapshotContext",
     "RWLock",
     "LRUCache",
+    "ArchiveInfo",
+    "PersistenceError",
+    "UnsupportedFormatError",
+    "CorruptArchiveError",
+    "CodecError",
+    "dump",
+    "dumps",
+    "load",
+    "loads",
+    "inspect",
     "__version__",
 ]
