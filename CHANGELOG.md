@@ -108,6 +108,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   the new formatting CI job actually passes on the first commit instead
   of failing immediately.
 
+### Added (Persistence)
+- `src/chronomap/persistence.py` — a versioned archive layer that fixes
+  the type loss in `save_json()` (which stringifies every key).
+  `dump()` / `dumps()` write a self-describing JSON or pickle archive with
+  a magic header, optional `zlib`/`gzip`/`bz2`/`lzma` compression, and an
+  atomic temporary-file swap. `load()` / `loads()` restore keys, values,
+  TTL deadlines, history, `max_history`, and snapshot time exactly.
+- The JSON codec tags scalars, bytes, datetimes/dates/times, tuples, sets,
+  frozensets, and mappings with non-string keys, so round trips are
+  lossless. Arbitrary Python objects can still use the pickle format.
+- `inspect()` returns an `ArchiveInfo` summary without reconstructing the
+  map, and `drop_expired=True` / `include_expired=False` control whether
+  TTL-expired keys are carried across saves.
+- `PersistenceError`, `UnsupportedFormatError`, `CorruptArchiveError`, and
+  `CodecError` provide specific failure modes; all derive from
+  `ChronoMapError`.
+- `tests/test_persistence.py` — 88 cases covering every codec tag,
+  compression mode, format inference, atomic-write failure paths, TTL
+  handling, corrupt headers/bodies/payloads, and pickle objects.
+- Added the `persistence` pytest marker and subsystem path filter.
+
 ### Fixed
 - **Writing to a key whose TTL had expired produced an invisible value.**
   `put()` / `put_many()` (and `AsyncChronoMap.put()`) left the stale TTL
