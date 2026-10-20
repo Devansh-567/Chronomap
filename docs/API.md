@@ -257,14 +257,15 @@ assert cm.count() == 2
 assert cm.count(lambda key, value: value > 0.5) == 1
 ```
 
-All three methods are O(n) scans over live keys.
+`query()` and `aggregate()` are O(n) scans over live keys. `count()` without a
+predicate uses the map's current size.
 
 ### Snapshots and rollback
 
 #### `snapshot()`
 
-Returns a deep-copied `ChronoMap` with the same store, TTLs, and
-`snapshot_time`. The snapshot is independent of later writes.
+Returns a deep-copied `ChronoMap` with the same store and TTLs plus a fresh
+snapshot timestamp. The snapshot is independent of later writes.
 
 ```python
 before = cm.snapshot()
@@ -327,8 +328,8 @@ left.merge(right, strategy="timestamp")
 
 #### `prune_history(key, keep_last=None, older_than=None)`
 
-Removes old versions for one key and returns the number removed. At least one
-of `keep_last` or `older_than` must be supplied.
+Removes old versions for one key and returns the number removed. If both
+`keep_last` and `older_than` are omitted, nothing is removed.
 
 ```python
 cm.prune_history("cpu", keep_last=10)
@@ -352,11 +353,12 @@ Returns operation counters plus current size information:
 ```python
 stats = cm.get_stats()
 # reads, writes, deletes, snapshots, auto_prunes,
-# cache_hits, cache_misses, cache_size, cache_hit_rate,
 # total_keys, total_versions, expired_keys
 ```
 
-If the cleanup thread is enabled, `ttl_cleanup_count` is included as well.
+When the cache is enabled, `cache_hits`, `cache_misses`, `cache_size`, and
+`cache_hit_rate` are included. When the cleanup thread is enabled,
+`ttl_cleanup_count` is included as well.
 
 #### `reset_stats()`
 
@@ -572,7 +574,7 @@ python -m chronomap.cli show state.pkl
 ```
 
 The CLI accepts both JSON and pickle files written by `save_json()` and
-`save_pickle()`. Missing files and unreadable files are reported on stderr.
+`save_pickle()`. Missing and unreadable files are reported in the terminal.
 
 ## Complexity and limits
 
