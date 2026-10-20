@@ -576,7 +576,7 @@ The CLI accepts both JSON and pickle files written by `save_json()` and
 
 ## Complexity and limits
 
-- `get`, `put`, and `history` use binary search over a key's version list.
+- `get` and `put` use binary search over a key's version list.
 - `query`, `aggregate`, and `count` scan every live key.
 - `diff` and `merge` walk both maps.
 - The structure is thread-safe within one process, not process-safe.
