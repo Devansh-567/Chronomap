@@ -249,14 +249,14 @@ def _cmd_get(args: argparse.Namespace) -> int:
 
 
 def _cmd_history(args: argparse.Namespace) -> int:
+    if args.limit is not None and args.limit < 1:
+        raise CLIError("--limit must be at least 1")
     cm = _load(args.path)
     key = _parse_key(args.key, args.literal_key)
     history = cm.history(key)
     if not history:
         raise CLIError(f"No history for key: {_key_name(key)}")
     if args.limit is not None:
-        if args.limit < 1:
-            raise CLIError("--limit must be at least 1")
         history = history[-args.limit :]
     if args.reverse:
         history = list(reversed(history))
