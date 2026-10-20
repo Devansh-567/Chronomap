@@ -1,11 +1,12 @@
 # API reference
 
 This page documents the public API of the current `chronomap` package:
-`ChronoMap`, `AsyncChronoMap`, `SnapshotContext`, the exception types, and the
-CLI module.
+`ChronoMap`, `AsyncChronoMap`, the query builders, archive persistence,
+`SnapshotContext`, the exception types, and the CLI module.
 
 ```python
 from chronomap import (
+    ArchiveInfo,
     AsyncChronoMap,
     ChronoMap,
     ChronoMapError,
@@ -13,10 +14,24 @@ from chronomap import (
     ChronoMapMemoryError,
     ChronoMapTypeError,
     ChronoMapValueError,
+    CodecError,
+    CorruptArchiveError,
     LRUCache,
+    PersistenceError,
+    Query,
+    QueryError,
     RWLock,
     SnapshotContext,
+    UnsupportedFormatError,
+    VersionQuery,
     __version__,
+    dump,
+    dumps,
+    inspect,
+    load,
+    loads,
+    query,
+    versions,
 )
 ```
 
@@ -444,6 +459,171 @@ pip install chronomap[pandas]
 frame = cm.to_dataframe()
 ```
 
+## Query builders
+
+The query layer provides lazy, chainable filters over current values and over
+individual historical versions. Import the builders and their types from the
+package root:
+
+```python
+from chronomap import Query, QueryError, VersionQuery, query, versions
+```
+
+`Query` is lazy: chained filters do not run until a terminal method such as
+`keys()`, `count()`, or `sum()` is called, and the map is read once at that
+point. `VersionQuery` snapshots its matching rows when the query is created.
+
+### `query(source, timestamp=None)`
+
+Builds a `Query` over a `ChronoMap` or any plain mapping. For a map,
+`timestamp` selects the value visible at that time; omitting it uses the
+current time. A plain mapping does not accept a timestamp.
+
+```python
+cm.put("cpu", 0.4, timestamp=100)
+cm.put("cpu", 0.9, timestamp=200)
+cm.put("disk", 0.2, timestamp=200)
+
+busy = query(cm).where_value(lambda value: value > 0.5)
+assert busy.to_dict() == {"cpu": 0.9}
+assert query(cm, timestamp=150).keys() == ["cpu"]
+assert query(cm, timestamp=200).keys() == ["cpu", "disk"]
+```
+
+Use `at(timestamp)` to move an existing chain to another point in time while
+keeping its filters.
+
+### `Query` filters and projections
+
+| Method | Behavior |
+| --- | --- |
+| `where(func)` / `filter(func)` | Keep `(key, value)` pairs where `func(key, value)` is true. |
+| `where_key(func)` | Keep pairs where `func(key)` is true. |
+| `where_value(func)` | Keep pairs where `func(value)` is true. |
+| `where_field(field, func)` | Keep mapping values with `field` and where `func(value[field])` is true. Other values are skipped. |
+| `keys_in(keys)` | Keep keys in the given iterable. |
+| `keys_like(pattern)` | Match stringified keys with an `fnmatch` pattern. |
+| `keys_regex(pattern)` | Match stringified keys with `re.search`. |
+| `values_in(values)` | Keep values equal to one of the supplied values. |
+| `values_between(low, high, *, inclusive=True)` | Keep values in the range. |
+| `distinct()` | Keep the first row for each distinct value. |
+| `select_field(field)` | Keep mappings that contain `field` and replace each value with `value[field]`. |
+| `transform(func)` | Replace each value with `func(key, value)`. |
+| `sort_by(func)` | Sort rows by `func(key, value)`. |
+| `sort_by_key(key=None, *, reverse=False)` | Sort by key, or by `key(key)`. |
+| `sort_by_value(key=None, *, reverse=False)` | Sort by value, or by `key(value)`. |
+| `limit(count)` / `offset(count)` | Slice the current row list. |
+
+### `Query` terminal methods
+
+`keys()`, `values()`, `items()`, and `to_dict()` return the selected rows.
+`count()` returns the number of rows. `first()` and `first_item()` raise
+`QueryError` when the result is empty unless a default is supplied.
+
+Aggregations operate on the selected values:
+
+| Method | Result |
+| --- | --- |
+| `sum()` / `mean()` / `median()` / `min()` / `max()` | Numeric or comparable aggregate; empty results raise `QueryError`. |
+| `any(predicate=None)` / `all(predicate)` | Whether any or all selected values match. |
+| `fold(func, initial)` | Left-fold over the selected values. |
+| `group_by(func)` | Map from `func(key, value)` to a list of values. |
+| `group_items(func)` | Map from `func(key, value)` to a list of `(key, value)` pairs. |
+
+### `versions(source, start=None, end=None, keys=None)`
+
+Builds a `VersionQuery` over individual versions of a `ChronoMap`. Each row is
+a `(key, timestamp, value)` triple, and rows are sorted by timestamp. Bounds are
+inclusive; omitted bounds are unbounded. `keys` restricts the source keys.
+
+```python
+history = versions(cm, start=100, end=200)
+assert history.rows() == [
+    ("cpu", 100.0, 0.4),
+    ("cpu", 200.0, 0.9),
+    ("disk", 200.0, 0.2),
+]
+```
+
+`VersionQuery` supports these filters and transforms:
+
+- `where(func)` with `func(key, timestamp, value)`, plus `where_key`,
+  `where_value`, and `where_timestamp`
+- `between(start, end)` and `keys_in(keys)` / `values_in(values)`
+- `sort_by_timestamp()`, `sort_by_key()`, and `sort_by_value()`
+- `limit(count)` and `offset(count)`
+- `rows()`, `keys()`, `values()`, `count()`, `first()`, `fold()`
+- `latest_per_key()`, `earliest_per_key()`, and `group_by_key()`
+- `to_records()` for dictionaries with `key`, `timestamp`, `datetime`, and `value`
+- `to_chronomap()` to materialize the selected rows as a new map
+- `sum()`, `mean()`, `min()`, and `max()`
+
+## Archive persistence
+
+The `chronomap.persistence` module writes self-describing archives that preserve
+Python key and value types, including TTL deadlines, history length, and the
+snapshot time. Two formats are available:
+
+- `"json"` is inspectable and uses a tagged codec for scalars, bytes, dates,
+  lists, tuples, sets, and mappings.
+- `"pickle"` supports arbitrary Python objects. Only load pickle archives from
+  sources you trust, because unpickling can execute code.
+
+### `dump(cm, path, *, format=None, compression=None, indent=2, include_expired=True, atomic=True)`
+
+Writes an archive to disk. The format is inferred from the suffix when omitted:
+`.pkl` and `.pickle` select pickle; everything else defaults to JSON. Compression
+may be `None`, `"zlib"`, `"gzip"`, `"bz2"`, or `"lzma"`. `atomic=True` writes a
+temporary file and replaces the target only after a successful write.
+
+```python
+from chronomap import dump
+
+dump(cm, "state.json")
+dump(cm, "state.pkl", compression="gzip")
+```
+
+Set `include_expired=False` to omit keys whose TTL has already elapsed.
+
+### `dumps(cm, *, format="json", compression=None, indent=2, include_expired=True)`
+
+Returns the archive as `bytes` instead of writing a file.
+
+### `load(path, *, format=None, drop_expired=False, **map_options)` and `loads(data, *, format=None, drop_expired=False, **map_options)`
+
+Read an archive from a path or byte string. The format is detected from the
+archive header; pass `format` only to reject an unexpected format. Remaining
+keyword arguments are forwarded to the `ChronoMap` constructor, for example
+`cache_size=0` or `enable_ttl_cleanup=False`.
+
+```python
+from chronomap import load, loads
+
+restored = load("state.json", cache_size=0, enable_ttl_cleanup=False)
+same = loads(open("state.json", "rb").read())
+```
+
+`drop_expired=True` discards expired keys during loading instead of restoring
+their TTLs.
+
+### `inspect(path)`
+
+Reads only the header and row counts, returning an `ArchiveInfo` with `format`,
+`format_version`, `compression`, `created_at`, `key_count`, `version_count`,
+`max_history`, and `snapshot_time`.
+
+```python
+from chronomap import inspect
+
+info = inspect("state.json")
+print(info.format, info.key_count, info.version_count)
+```
+
+`dump`, `load`, and `inspect` raise `PersistenceError` (or a subclass) for I/O
+and archive failures. `UnsupportedFormatError` covers unknown formats,
+versions, and compression names; `CorruptArchiveError` covers malformed
+payloads; `CodecError` covers values the JSON codec cannot represent.
+
 ## AsyncChronoMap
 
 `AsyncChronoMap` is a separate asyncio-native implementation. It uses an
@@ -553,6 +733,11 @@ All package exceptions derive from `ChronoMapError`, which derives from
 | `ChronoMapTypeError` | Unhashable keys, invalid timestamp types, bad callback arguments. |
 | `ChronoMapValueError` | Invalid TTLs, non-finite timestamps, bad merge strategies, unknown compression. |
 | `ChronoMapMemoryError` | The memory monitor's hard ceiling was exceeded. |
+| `QueryError` | A query was composed incorrectly or an aggregate had no rows. |
+| `PersistenceError` | Base class for archive read/write failures. |
+| `UnsupportedFormatError` | Unknown archive format, version, or compression. |
+| `CorruptArchiveError` | Structurally invalid or malformed archive contents. |
+| `CodecError` | A value cannot be represented by the selected archive codec. |
 
 ```python
 from chronomap import ChronoMapKeyError
