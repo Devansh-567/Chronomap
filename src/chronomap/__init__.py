@@ -17,7 +17,7 @@ See the README for the full walkthrough and the docs/ directory for
 API reference.
 """
 
-from .asynchronous import AsyncChronoMap
+from .asynchronous import AsyncChronoMap, AsyncSnapshotContext
 from .core import ChronoMap
 from ._cache import LRUCache
 from ._lock import RWLock
@@ -40,6 +40,7 @@ __all__ = [
     "ChronoMapValueError",
     "ChronoMapMemoryError",
     "SnapshotContext",
+    "AsyncSnapshotContext",
     "RWLock",
     "LRUCache",
     "__version__",

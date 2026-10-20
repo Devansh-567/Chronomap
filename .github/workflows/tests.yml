@@ -44,6 +44,7 @@ jobs:
               - 'src/chronomap/_snapshot.py'
             async_map:
               - 'src/chronomap/asynchronous.py'
+              - 'tests/test_async_parity.py'
             cli:
               - 'src/chronomap/cli.py'
               - 'tests/test_cli.py'
