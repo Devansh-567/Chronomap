@@ -8,14 +8,14 @@ as well as "what is it now."
 from chronomap import ChronoMap
 
 cm = ChronoMap()
-cm['config'] = {'debug': True}
-cm['config'] = {'debug': False}
+cm["config"] = {"debug": True}
+cm["config"] = {"debug": False}
 
-cm.history('config')
+cm.history("config")
 # [(1720699200.1, {'debug': True}), (1720699241.7, {'debug': False})]
 
-cm.get('config', timestamp='2024-07-11T10:00:00')
-# whatever the value was at that moment
+cm.get("config", timestamp="2024-07-11T10:00:00")
+# the value that was visible at that moment
 ```
 
 ## Why this exists
@@ -26,7 +26,7 @@ indexed by timestamp, so debugging "why did this config change" or
 "what did this look like an hour ago" doesn't require a separate audit
 log bolted on afterward.
 
-It's not trying to replace a real database - it's an in-memory structure
+It's not trying to replace a real database. It's an in-memory structure
 for the case where you want dict-like ergonomics plus history: config
 stores, session state, feature flags, small time-series, that kind of
 thing.
@@ -40,54 +40,104 @@ pip install chronomap
 pip install chronomap[pandas]
 ```
 
-Requires Python 3.8+. No required dependencies.
+Requires Python 3.8+. No required runtime dependencies.
+
+## Quick start
+
+```python
+from chronomap import ChronoMap
+
+cm = ChronoMap()
+cm.put("cpu", 0.42, timestamp=100)
+cm.put("cpu", 0.91, timestamp=200)
+cm.put("cpu", 0.17, ttl=3600)
+
+cm.get("cpu")                    # current value
+cm.get("cpu", timestamp=150)     # 0.42, the value as of timestamp 150
+cm.history("cpu")                # every stored (timestamp, value) pair
+cm.get_range("cpu", 100, 200)    # versions in an inclusive time range
+```
+
+Timestamps can be Unix numbers, `datetime` objects, or ISO-8601 strings.
+Expired keys are hidden from reads immediately and are removed lazily on
+access (or by the optional cleanup thread).
+
+## Documentation
+
+- [`docs/API.md`](docs/API.md) - method-by-method reference for the
+  synchronous map, async map, exceptions, and CLI.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - storage layout, locking,
+  caching, TTL cleanup, snapshots, and the async design.
+- [`docs/COOKBOOK.md`](docs/COOKBOOK.md) - practical recipes for config,
+  sessions, caches, snapshots, merges, and persistence.
+- [`docs/TESTING.md`](docs/TESTING.md) - local test commands, markers,
+  coverage, and CI expectations.
+- [`CHANGELOG.md`](CHANGELOG.md) - what changed and why.
 
 ## Core features
 
-- **Time travel** - `get(key, timestamp=...)` returns the value as of
-  any point in history, with microsecond-precision lookups via binary
-  search over each key's version list.
-- **Snapshots & rollback** - `snapshot()` / `rollback()`, or
-  `with cm.snapshot_context(): ...` for automatic rollback if the block
+- **Time travel** - `get(key, timestamp=...)` returns the value as of any
+  point in history, with binary search over each key's sorted version list.
+- **Snapshots and rollback** - `snapshot()` / `rollback()`, or
+  `with cm.snapshot_context(): ...` for automatic rollback when a block
   raises.
-- **TTL** - `put(key, value, ttl=3600)`; expired keys are cleared lazily
-  on access and (optionally) by a background thread.
-- **Queries** - `query()`, `aggregate()`, `count()` take plain Python
-  predicates/functions rather than a query language.
-- **Change hooks** - `on_change()` for global notifications,
-  `subscribe(key, callback)` for a single key.
-- **Auto-pruning** - cap history length per key with `max_history` so
-  long-running processes don't grow unbounded.
-- **Async** - `AsyncChronoMap` is a separate asyncio-native
-  implementation with the same core surface.
+- **TTL** - `put(key, value, ttl=3600)`; expired keys disappear from reads
+  and can also be swept by a background cleanup thread.
+- **Queries** - `query()`, `aggregate()`, and `count()` take ordinary
+  Python callables instead of a query language.
+- **Change hooks** - `on_change()` for global notifications and
+  `subscribe(key, callback)` for one key.
+- **Auto-pruning** - cap history length per key with `max_history`, or trim
+  on demand with `prune_history()` / `prune_all_history()`.
+- **Diff and merge** - compare two maps with `diff()` / `diff_detailed()`
+  and combine histories with `merge(strategy=...)`.
+- **Persistence** - checkpoint with `save_json()`, `save_pickle()`,
+  `to_dict()`, and the matching loaders.
+- **Async** - `AsyncChronoMap` is a separate asyncio-native implementation
+  for use inside event loops.
+- **CLI inspection** - `python -m chronomap.cli show state.json` prints a
+  saved map's current state.
 
-Full method-by-method reference lives in [`docs/API.md`](docs/API.md).
+## Thread safety
+
+`ChronoMap` is safe to share between threads in one process. It uses a
+reader-writer lock by default, with an `RLock` fallback if you set
+`use_rwlock=False`. It is not process-safe and does not coordinate across
+multiple processes.
+
+`AsyncChronoMap` uses an `asyncio.Lock` and should stay on one event loop.
+Do not share a synchronous map and an async map as if they were the same
+object.
 
 ## What it isn't
 
-- Not a persistent database. `save_json`/`save_pickle` exist for
+- Not a persistent database. `save_json()` and `save_pickle()` exist for
   checkpointing, but this is an in-memory structure, not a WAL-backed
-  store.
-- Not process-safe. Thread-safe within one process; if you need
-  multiprocessing, use separate instances and your own IPC.
-- The query/aggregate methods are O(n) linear scans. Fine for the sizes
-  this is meant for (hundreds to low thousands of keys), not built for
-  large-scale analytics.
+  store. JSON saves coerce keys to strings; use pickle when key types
+  matter.
+- Not process-safe. Thread-safe within one process; for multiprocessing,
+  use separate instances and your own IPC.
+- Not built for large-scale analytics. `query()`, `aggregate()`, and
+  `count()` are O(n) scans. They are intended for hundreds to low
+  thousands of keys, not warehouse-sized datasets.
 
 ## Status
 
-This project is in the middle of being restructured from a single-file
-script into a proper package (see `CHANGELOG.md`). As of this restructure:
-**246 tests passing, 100% coverage** - reproducible yourself with
-`pytest tests/ --cov=chronomap`, not a claim to take on faith. It hasn't
-been through a broad external review yet - issues and PRs pointing out
-rough edges are genuinely welcome, not just a formality.
+The project has 250+ tests and 100% line coverage across the package.
+CI runs the suite on Python 3.8 through 3.12 and checks formatting with
+`black`. Reproduce the coverage locally with:
+
+```bash
+pytest tests/ --cov=chronomap
+```
+
+Issues and PRs pointing out rough edges are welcome.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Short version: fork, branch,
-write a test for whatever you're changing, open a PR. Nothing fancier
-than that.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`docs/TESTING.md`](docs/TESTING.md). Short version: fork, branch, write a
+test for the change, run the suite, and open a PR.
 
 ## License
 
