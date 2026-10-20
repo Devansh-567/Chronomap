@@ -32,6 +32,48 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `scripts/build_changelog_entry.py` — builds the name-free CHANGELOG
   section from merged PRs in a date window, grouped by label
   (Added/Changed/Fixed/Documentation/Maintenance).
+- `ChronoMap.get_many()`, `exists()`, `setdefault()`, and `pop()` for
+  dict-style batch reads and atomic conditional writes.
+- Constructor validation for `max_history`, `cache_size`,
+  `ttl_cleanup_interval`, and `max_memory_mb`; invalid limits now fail
+  at construction instead of producing strange behavior later.
+- `tests/test_core_correctness.py`: regression tests covering rejected
+  TTLs, stored `None` values, batch validation, pruning, filtering,
+  merge isolation, callback reentrancy, and serialization payload checks.
+
+### Fixed
+- **Rejected TTLs used to leave a version behind.** `put()` appended the
+  value before checking `ttl`, so `put("k", "v", ttl=0)` raised
+  `ChronoMapValueError` *and* stored the value. TTL validation now runs
+  before any mutation in `put()`, `put_many()`, `get_or_set()`, and
+  `setdefault()`.
+- **Stored `None` values disappeared from queries.** `query()`,
+  `aggregate()`, and `get_keys_by_value()` treated `None` as a missing
+  key, even though `get()` and `in` considered it present. Lookups now
+  distinguish "found a `None`" from "found nothing".
+- **`get()` could return the default for a fresh write.** The first
+  expiry check happened before the read lock, so a write racing with
+  expiration could be missed. The check and cache lookup now happen
+  under the same read lock as the version lookup.
+- **`prune_history(keep_last=0)` kept every version.** The slice
+  `versions[-0:]` is the whole list. Zero now clears the key, and
+  negative or non-integer `keep_last` values are rejected.
+- **`max_history=0` kept unbounded history.** Zero and negative caps are
+  now rejected at construction instead of silently disabling pruning.
+- **Deleting an expired key reported success.** `delete()` and
+  `delete_many()` now treat expired keys as absent, purge their stale
+  TTL entries, and report only live deletions.
+- **`diff()`, `diff_detailed()`, and `merge()` read the other map without
+  its lock.** They now take a short visibility snapshot under the other
+  map's read lock, then compare/merge outside it -- no lock nesting and
+  no deadlock when two maps are diffed or merged in opposite orders.
+- **`merge(strategy='timestamp')` was quadratic.** It used repeated list
+  inserts; it now performs a linear `heapq.merge` over both sorted
+  histories and refreshes the memory guard afterward.
+- **`from_dict()` trusted stored payloads.** Non-mapping payloads,
+  malformed version entries, and non-mapping `store`/`ttl` sections now
+  raise typed errors. `load_json()` also accepts older files that have
+  no `ttl` section.
 
 ### Changed
 - `LICENSE` copyright line updated to `Devansh Singh, ChronoMap

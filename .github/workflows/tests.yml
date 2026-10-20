@@ -29,19 +29,25 @@ jobs:
               - 'src/chronomap/core.py'
               - 'src/chronomap/__init__.py'
               - 'src/chronomap/exceptions.py'
+              - 'src/chronomap/_cache.py'
+              - 'src/chronomap/_snapshot.py'
               - 'tests/test_chronomap.py'
               - 'tests/test_basic.py'
               - 'tests/test_coverage_gaps.py'
+              - 'tests/test_core_correctness.py'
             cache:
               - 'src/chronomap/_cache.py'
+              - 'tests/test_core_correctness.py'
             lock:
               - 'src/chronomap/_lock.py'
             memory:
               - 'src/chronomap/_memory.py'
             ttl:
               - 'src/chronomap/_ttl_cleanup.py'
+              - 'tests/test_core_correctness.py'
             snapshot:
               - 'src/chronomap/_snapshot.py'
+              - 'tests/test_core_correctness.py'
             async_map:
               - 'src/chronomap/asynchronous.py'
             cli:
