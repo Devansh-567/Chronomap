@@ -656,6 +656,21 @@ class AsyncChronoMap:
                 self._stats["deletes"] += 1
         return count
 
+    async def persist(self, key: Any) -> bool:
+        """Remove a key's TTL so it stops expiring. Returns True if a TTL was removed."""
+        self._validate_key(key)
+        async with self._lock:
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+                return False
+            if key not in self._ttl:
+                return False
+
+            del self._ttl[key]
+            if self._cache:
+                self._cache.invalidate(key)
+            return True
+
     # -- queries ------------------------------------------------------------
 
     async def query(
