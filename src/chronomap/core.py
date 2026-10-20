@@ -1356,17 +1356,40 @@ class ChronoMap:
         for key, versions in raw_store.items():
             if not isinstance(versions, (list, tuple)):
                 raise ChronoMapValueError(f"History for key {key!r} must be a sequence")
-            normalized = []
+            normalized: List[Tuple[float, Any]] = []
             for version in versions:
                 if not isinstance(version, (list, tuple)) or len(version) != 2:
                     raise ChronoMapValueError(f"Malformed version for key {key!r}: {version!r}")
-                normalized.append((version[0], version[1]))
+                timestamp = version[0]
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                    raise ChronoMapTypeError(f"Timestamp for key {key!r} must be numeric")
+                if not math.isfinite(timestamp):
+                    raise ChronoMapValueError(f"Timestamp for key {key!r} must be finite")
+                if normalized and timestamp < normalized[-1][0]:
+                    raise ChronoMapValueError(f"History for key {key!r} is not sorted")
+                normalized.append((float(timestamp), version[1]))
             normalized_store[key] = normalized
+
+        normalized_ttl: Dict[Any, float] = {}
+        for key, deadline in raw_ttl.items():
+            if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+                raise ChronoMapTypeError(f"TTL deadline for key {key!r} must be numeric")
+            if not math.isfinite(deadline):
+                raise ChronoMapValueError(f"TTL deadline for key {key!r} must be finite")
+            normalized_ttl[key] = float(deadline)
+
+        snapshot_time = payload.get("snapshot_time")
+        if snapshot_time is not None:
+            if isinstance(snapshot_time, bool) or not isinstance(snapshot_time, (int, float)):
+                raise ChronoMapTypeError("snapshot_time must be numeric or None")
+            if not math.isfinite(snapshot_time):
+                raise ChronoMapValueError("snapshot_time must be finite")
+            snapshot_time = float(snapshot_time)
 
         instance = cls(debug=debug, use_rwlock=use_rwlock, max_history=payload.get("max_history"), **kwargs)
         instance._store = normalized_store
-        instance._ttl = dict(raw_ttl)
-        instance._snapshot_time = payload.get("snapshot_time")
+        instance._ttl = normalized_ttl
+        instance._snapshot_time = snapshot_time
         return instance
 
     def save_json(self, file_path: Union[str, Path]) -> None:
