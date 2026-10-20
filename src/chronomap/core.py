@@ -13,6 +13,7 @@ from __future__ import annotations
 import bisect
 import bz2
 import gzip
+import heapq
 import json
 import logging
 import lzma
@@ -23,7 +24,7 @@ import zlib
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 from ._cache import LRUCache
 from ._lock import RWLock
@@ -39,6 +40,7 @@ from .exceptions import (
 
 logger = logging.getLogger(__name__)
 _CACHE_MISS = object()
+_MISSING = object()
 
 
 class ChronoMap:
@@ -75,6 +77,27 @@ class ChronoMap:
         ttl_cleanup_interval: float = 60.0,
         max_memory_mb: Optional[float] = None,
     ) -> None:
+        if max_history is not None and (
+            isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 1
+        ):
+            raise ChronoMapValueError("max_history must be a positive integer or None")
+        if isinstance(cache_size, bool) or not isinstance(cache_size, int) or cache_size < 0:
+            raise ChronoMapValueError("cache_size must be a non-negative integer")
+        if (
+            isinstance(ttl_cleanup_interval, bool)
+            or not isinstance(ttl_cleanup_interval, (int, float))
+            or not math.isfinite(ttl_cleanup_interval)
+            or ttl_cleanup_interval <= 0
+        ):
+            raise ChronoMapValueError("ttl_cleanup_interval must be a positive number")
+        if max_memory_mb is not None and (
+            isinstance(max_memory_mb, bool)
+            or not isinstance(max_memory_mb, (int, float))
+            or not math.isfinite(max_memory_mb)
+            or max_memory_mb <= 0
+        ):
+            raise ChronoMapValueError("max_memory_mb must be a positive number or None")
+
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
 
@@ -120,8 +143,9 @@ class ChronoMap:
                 logger.addHandler(handler)
 
     def __del__(self) -> None:
-        if getattr(self, "_ttl_cleanup_thread", None):
-            self._ttl_cleanup_thread.stop()
+        cleanup_thread = getattr(self, "_ttl_cleanup_thread", None)
+        if cleanup_thread is not None:
+            cleanup_thread.stop()
 
     # -- internal helpers -----------------------------------------------
 
@@ -129,6 +153,8 @@ class ChronoMap:
         return datetime.now(timezone.utc).timestamp()
 
     def _parse_timestamp(self, timestamp: Union[float, str, datetime]) -> float:
+        if isinstance(timestamp, bool):
+            raise ChronoMapTypeError("Timestamp must be numeric, got bool")
         if isinstance(timestamp, str):
             try:
                 dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -149,10 +175,24 @@ class ChronoMap:
             raise ChronoMapTypeError(f"Key must be hashable, got {type(key).__name__}")
 
     def _validate_timestamp(self, timestamp: float) -> None:
-        if not isinstance(timestamp, (int, float)):
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
             raise ChronoMapTypeError(f"Timestamp must be numeric, got {type(timestamp).__name__}")
         if not math.isfinite(timestamp):
             raise ChronoMapValueError(f"Timestamp must be finite, got {timestamp}")
+
+    def _validate_ttl(self, ttl: Optional[float]) -> None:
+        if ttl is None:
+            return
+        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+            raise ChronoMapTypeError(f"TTL must be numeric, got {type(ttl).__name__}")
+        if not math.isfinite(ttl) or ttl <= 0:
+            raise ChronoMapValueError(f"TTL must be a positive finite number, got {ttl}")
+
+    def _validate_keep_last(self, keep_last: Optional[int]) -> None:
+        if keep_last is None:
+            return
+        if isinstance(keep_last, bool) or not isinstance(keep_last, int) or keep_last < 0:
+            raise ChronoMapValueError("keep_last must be a non-negative integer or None")
 
     def _is_expired(self, key: Any) -> bool:
         if key not in self._ttl:
@@ -209,6 +249,22 @@ class ChronoMap:
             except Exception:
                 logger.exception("Error in key subscriber callback for %r", key)
 
+    def _lookup_unlocked(self, key: Any, ts: float) -> Tuple[bool, Any]:
+        """Resolve a key at `ts`; the bool distinguishes a stored None from a miss."""
+        if self._is_expired(key):
+            return False, None
+
+        versions = self._store.get(key, [])
+        if not versions:
+            return False, None
+
+        times = [v[0] for v in versions]
+        idx = bisect.bisect_right(times, ts) - 1
+        if idx < 0:
+            return False, None
+
+        return True, versions[idx][1]
+
     def _get_unlocked(
         self,
         key: Any,
@@ -219,32 +275,24 @@ class ChronoMap:
     ) -> Any:
         """Same as get(), but assumes the caller already holds a read lock."""
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
-
-        if self._is_expired(key):
-            if strict:
-                raise ChronoMapKeyError(key)
-            return default
-
-        versions = self._store.get(key, [])
-        if not versions:
-            if strict:
-                raise ChronoMapKeyError(key)
-            return default
-
-        times = [v[0] for v in versions]
-        idx = bisect.bisect_right(times, ts) - 1
-        if idx < 0:
-            if strict:
-                raise ChronoMapKeyError(key)
-            return default
-
-        return versions[idx][1]
+        found, value = self._lookup_unlocked(key, ts)
+        if found:
+            return value
+        if strict:
+            raise ChronoMapKeyError(key)
+        return default
 
     # -- event hooks ------------------------------------------------------
 
     def on_change(self, callback: Callable[[Any, Any, Any, float], None]) -> None:
         """Register a callback fired on every write: callback(key, old, new, ts)."""
-        self._change_callbacks.append(callback)
+        if not callable(callback):
+            raise ChronoMapTypeError("Change callback must be callable")
+        self._acquire_write()
+        try:
+            self._change_callbacks.append(callback)
+        finally:
+            self._release_write()
 
     def subscribe(self, key: Any, callback: Callable[[Any, Any, float], None]) -> None:
         """Register a callback for one specific key: callback(old, new, ts)."""
@@ -275,11 +323,15 @@ class ChronoMap:
             self._release_write()
 
     def remove_change_callback(self, callback: Callable) -> bool:
+        self._acquire_write()
         try:
-            self._change_callbacks.remove(callback)
-            return True
-        except ValueError:
-            return False
+            try:
+                self._change_callbacks.remove(callback)
+                return True
+            except ValueError:
+                return False
+        finally:
+            self._release_write()
 
     # -- core read/write ---------------------------------------------------
 
@@ -292,6 +344,7 @@ class ChronoMap:
     ) -> None:
         """Store a value at the given timestamp (defaults to now)."""
         self._validate_key(key)
+        self._validate_ttl(ttl)
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._validate_timestamp(ts)
 
@@ -312,8 +365,6 @@ class ChronoMap:
                 versions.insert(idx, (ts, value))
 
             if ttl is not None:
-                if ttl <= 0:
-                    raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
                 self._ttl[key] = self._current_time() + ttl
 
             self._auto_prune(key)
@@ -323,9 +374,10 @@ class ChronoMap:
 
             self._stats["writes"] += 1
             logger.debug("PUT key=%r value=%r at ts=%f ttl=%s", key, value, ts, ttl)
-            self._trigger_change_callbacks(key, old_value, value, ts)
         finally:
             self._release_write()
+
+        self._trigger_change_callbacks(key, old_value, value, ts)
 
     def get(
         self,
@@ -336,48 +388,36 @@ class ChronoMap:
         strict: bool = False,
     ) -> Any:
         """Retrieve the value for a key at a given timestamp (cached)."""
+        self._validate_key(key)
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._validate_timestamp(ts)
-
-        if self._is_expired(key):
-            if self._cache:
-                self._cache.invalidate(key)
-            if strict:
-                raise ChronoMapKeyError(key)
-            return default
-
-        if self._cache:
-            cache_key = (key, None if timestamp is None else ts)
-            cached = self._cache.get(cache_key, _CACHE_MISS)
-            if cached is not _CACHE_MISS:
-                self._stats["cache_hits"] += 1
-                self._stats["reads"] += 1
-                return cached
-            self._stats["cache_misses"] += 1
+        cache_key = (key, None if timestamp is None else ts)
 
         self._acquire_read()
         try:
             if self._is_expired(key):
+                if self._cache:
+                    self._cache.invalidate(key)
                 if strict:
                     raise ChronoMapKeyError(key)
                 return default
 
-            versions = self._store.get(key, [])
-            if not versions:
-                if strict:
-                    raise ChronoMapKeyError(key)
-                return default
-
-            times = [v[0] for v in versions]
-            idx = bisect.bisect_right(times, ts) - 1
-            if idx < 0:
-                if strict:
-                    raise ChronoMapKeyError(key)
-                return default
-
-            value = versions[idx][1]
             if self._cache:
-                self._cache.put((key, None if timestamp is None else ts), value)
+                cached = self._cache.get(cache_key, _CACHE_MISS)
+                if cached is not _CACHE_MISS:
+                    self._stats["cache_hits"] += 1
+                    self._stats["reads"] += 1
+                    return cached
+                self._stats["cache_misses"] += 1
+
+            found, value = self._lookup_unlocked(key, ts)
+            if not found:
+                if strict:
+                    raise ChronoMapKeyError(key)
+                return default
+
+            if self._cache:
+                self._cache.put(cache_key, value)
 
             self._stats["reads"] += 1
             logger.debug("GET key=%r -> %r at ts=%f", key, value, ts)
@@ -390,11 +430,12 @@ class ChronoMap:
         self._validate_key(key)
         if not callable(default_factory):
             raise ChronoMapTypeError("default_factory must be callable")
-        if ttl is not None and ttl <= 0:
-            raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
+        self._validate_ttl(ttl)
 
         ts = self._current_time()
         self._validate_timestamp(ts)
+        created = False
+        value: Any = None
 
         self._acquire_write()
         try:
@@ -421,30 +462,138 @@ class ChronoMap:
             self._memory_monitor.check_memory(self._store, self._ttl)
 
             self._stats["writes"] += 1
+            created = True
             logger.debug("GET_OR_SET key=%r value=%r ttl=%s", key, value, ttl)
-            self._trigger_change_callbacks(key, None, value, ts)
-            return value
         finally:
             self._release_write()
+
+        if created:
+            self._trigger_change_callbacks(key, None, value, ts)
+        return value
 
     def get_or_default(self, key: Any, default: Any, ttl: Optional[float] = None) -> Any:
         """Like get_or_set, but takes a plain value (or a zero-arg factory)."""
         factory = default if callable(default) else lambda: default
         return self.get_or_set(key, factory, ttl=ttl)
 
-    def delete(self, key: Any) -> bool:
-        """Delete all history for a key. Returns True if the key existed."""
+    def get_many(
+        self,
+        keys: Iterable[Any],
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        *,
+        strict: bool = False,
+    ) -> Dict[Any, Any]:
+        """Read several keys at one timestamp; missing keys are omitted unless strict."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+
+        result: Dict[Any, Any] = {}
+        missing: List[Any] = []
+        self._acquire_read()
+        try:
+            for key in keys:
+                self._validate_key(key)
+                found, value = self._lookup_unlocked(key, ts)
+                if found:
+                    result[key] = value
+                elif strict:
+                    missing.append(key)
+        finally:
+            self._release_read()
+
+        if missing:
+            raise ChronoMapKeyError(missing[0])
+        return result
+
+    def exists(self, key: Any, timestamp: Optional[Union[float, str, datetime]] = None) -> bool:
+        """True when the key resolves to a value at the timestamp (a stored None counts)."""
+        self._validate_key(key)
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        self._acquire_read()
+        try:
+            return self._lookup_unlocked(key, ts)[0]
+        finally:
+            self._release_read()
+
+    def setdefault(self, key: Any, default: Any = None, ttl: Optional[float] = None) -> Any:
+        """Return the latest value, inserting `default` first when the key is absent."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        ts = self._current_time()
+        created = False
+
         self._acquire_write()
         try:
-            existed = key in self._store
-            if existed:
-                del self._store[key]
+            if self._is_expired(key):
+                self._store.pop(key, None)
                 self._ttl.pop(key, None)
                 if self._cache:
                     self._cache.invalidate(key)
-                self._stats["deletes"] += 1
-                logger.debug("DELETE key=%r", key)
-            return existed
+
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats["reads"] += 1
+                return versions[-1][1]
+
+            self._store[key] = [(ts, default)]
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+
+            if self._cache:
+                self._cache.invalidate(key)
+            self._memory_monitor.check_memory(self._store, self._ttl)
+            self._stats["writes"] += 1
+            created = True
+            logger.debug("SETDEFAULT key=%r value=%r ttl=%s", key, default, ttl)
+        finally:
+            self._release_write()
+
+        if created:
+            self._trigger_change_callbacks(key, None, default, ts)
+        return default
+
+    def pop(self, key: Any, default: Any = _MISSING) -> Any:
+        """Return the current value and erase the key, or return `default` if absent."""
+        self._validate_key(key)
+        self._acquire_write()
+        try:
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+            found, value = self._lookup_unlocked(key, self._current_time())
+            if not found:
+                if default is _MISSING:
+                    raise ChronoMapKeyError(key)
+                return default
+
+            del self._store[key]
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["deletes"] += 1
+            logger.debug("POP key=%r value=%r", key, value)
+            return value
+        finally:
+            self._release_write()
+
+    def delete(self, key: Any) -> bool:
+        """Delete all history for a key. Returns True if a live key was removed."""
+        self._validate_key(key)
+        self._acquire_write()
+        try:
+            if key not in self._store:
+                return False
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+                return False
+
+            del self._store[key]
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["deletes"] += 1
+            logger.debug("DELETE key=%r", key)
+            return True
         finally:
             self._release_write()
 
@@ -457,14 +606,13 @@ class ChronoMap:
     ) -> Dict[Any, Any]:
         """Return {key: value} for every key where predicate(key, value) is True."""
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
         self._acquire_read()
         try:
             result = {}
             for key in self._store:
-                if self._is_expired(key):
-                    continue
-                value = self._get_unlocked(key, timestamp=ts)
-                if value is not None and predicate(key, value):
+                found, value = self._lookup_unlocked(key, ts)
+                if found and predicate(key, value):
                     result[key] = value
             return result
         finally:
@@ -478,15 +626,15 @@ class ChronoMap:
     ) -> Any:
         """Apply func to the list of current values (optionally restricted to `keys`)."""
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
         self._acquire_read()
         try:
             target_keys = keys if keys is not None else list(self._store.keys())
             values = []
             for key in target_keys:
-                if not self._is_expired(key):
-                    val = self._get_unlocked(key, timestamp=ts)
-                    if val is not None:
-                        values.append(val)
+                found, val = self._lookup_unlocked(key, ts)
+                if found:
+                    values.append(val)
             return func(values) if values else None
         finally:
             self._release_read()
@@ -510,6 +658,8 @@ class ChronoMap:
         older_than: Optional[Union[float, str, datetime]] = None,
     ) -> int:
         """Remove old versions for one key. Returns the number removed."""
+        self._validate_key(key)
+        self._validate_keep_last(keep_last)
         self._acquire_write()
         try:
             if key not in self._store:
@@ -519,11 +669,19 @@ class ChronoMap:
             original_count = len(versions)
 
             if keep_last is not None:
-                versions[:] = versions[-keep_last:]
+                if keep_last == 0:
+                    versions.clear()
+                else:
+                    versions[:] = versions[-keep_last:]
 
             if older_than is not None:
                 cutoff_ts = self._parse_timestamp(older_than)
+                self._validate_timestamp(cutoff_ts)
                 versions[:] = [(ts, val) for ts, val in versions if ts >= cutoff_ts]
+
+            if not versions:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
 
             removed = original_count - len(versions)
             if self._cache and removed > 0:
@@ -554,13 +712,18 @@ class ChronoMap:
         ttl: Optional[float] = None,
     ) -> None:
         """Insert multiple key-value pairs under a single lock acquisition."""
+        self._validate_ttl(ttl)
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._validate_timestamp(ts)
+        keys = list(items.keys())
+        for key in keys:
+            self._validate_key(key)
 
+        events: List[Tuple[Any, Any, Any, float]] = []
         self._acquire_write()
         try:
-            for key, value in items.items():
-                self._validate_key(key)
+            for key in keys:
+                value = items[key]
                 self._purge_if_expired(key)
 
                 old_value = None
@@ -576,35 +739,44 @@ class ChronoMap:
                     versions.insert(idx, (ts, value))
 
                 if ttl is not None:
-                    if ttl <= 0:
-                        raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
                     self._ttl[key] = self._current_time() + ttl
 
                 self._auto_prune(key)
                 if self._cache:
                     self._cache.invalidate(key)
 
-                self._trigger_change_callbacks(key, old_value, value, ts)
+                events.append((key, old_value, value, ts))
 
             self._memory_monitor.check_memory(self._store, self._ttl)
-            self._stats["writes"] += len(items)
-            logger.debug("PUT_MANY %d items", len(items))
+            self._stats["writes"] += len(keys)
+            logger.debug("PUT_MANY %d items", len(keys))
         finally:
             self._release_write()
 
+        for key, old_value, value, event_ts in events:
+            self._trigger_change_callbacks(key, old_value, value, event_ts)
+
     def delete_many(self, keys: List[Any]) -> int:
         """Delete multiple keys under a single lock acquisition. Returns count deleted."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
         self._acquire_write()
         try:
             count = 0
             for key in keys:
-                if key in self._store:
-                    del self._store[key]
-                    self._ttl.pop(key, None)
-                    if self._cache:
-                        self._cache.invalidate(key)
-                    count += 1
-                    self._stats["deletes"] += 1
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    self._purge_if_expired(key)
+                    continue
+
+                del self._store[key]
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                count += 1
+                self._stats["deletes"] += 1
             logger.debug("DELETE_MANY %d/%d keys", count, len(keys))
             return count
         finally:
@@ -619,6 +791,7 @@ class ChronoMap:
         end_ts: Optional[Union[float, str, datetime]] = None,
     ) -> List[Tuple[float, Any]]:
         """All (timestamp, value) pairs for a key within [start_ts, end_ts]."""
+        self._validate_key(key)
         self._acquire_read()
         try:
             if self._is_expired(key):
@@ -629,6 +802,12 @@ class ChronoMap:
 
             start = self._parse_timestamp(start_ts) if start_ts is not None else float("-inf")
             end = self._parse_timestamp(end_ts) if end_ts is not None else self._current_time()
+            if start_ts is not None:
+                self._validate_timestamp(start)
+            if end_ts is not None:
+                self._validate_timestamp(end)
+            if start > end:
+                return []
 
             result = [(ts, val) for ts, val in versions if start <= ts <= end]
             logger.debug("GET_RANGE key=%r found %d entries", key, len(result))
@@ -638,6 +817,10 @@ class ChronoMap:
 
     def get_latest_keys(self, n: int) -> List[Tuple[Any, float, Any]]:
         """The n most recently written (key, timestamp, value) triples."""
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ChronoMapValueError("n must be a non-negative integer")
+        if n == 0:
+            return []
         self._acquire_read()
         try:
             latest_items = []
@@ -659,13 +842,14 @@ class ChronoMap:
     ) -> List[Any]:
         """All keys whose value at `timestamp` equals `value`."""
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
         self._acquire_read()
         try:
-            keys = [
-                key
-                for key in self._store
-                if not self._is_expired(key) and self._get_unlocked(key, timestamp=ts) == value
-            ]
+            keys = []
+            for key in self._store:
+                found, current = self._lookup_unlocked(key, ts)
+                if found and current == value:
+                    keys.append(key)
             logger.debug("GET_KEYS_BY_VALUE found %d keys", len(keys))
             return keys
         finally:
@@ -711,42 +895,55 @@ class ChronoMap:
         finally:
             self._release_write()
 
+    def _visibility_snapshot(self) -> Tuple[Dict[Any, Any], Set[Any]]:
+        """Copy latest live values plus the set of expired keys (one lock pass)."""
+        live: Dict[Any, Any] = {}
+        expired: Set[Any] = set()
+        self._acquire_read()
+        try:
+            for key, versions in self._store.items():
+                if self._is_expired(key):
+                    expired.add(key)
+                elif versions:
+                    live[key] = versions[-1][1]
+        finally:
+            self._release_read()
+        return live, expired
+
     def diff(self, other: "ChronoMap") -> Set[Any]:
         """Keys whose current value differs between self and other."""
         if not isinstance(other, ChronoMap):
             raise ChronoMapTypeError("Expected ChronoMap instance for diff.")
-        self._acquire_read()
-        try:
-            changed = set()
-            for key in set(self._store) | set(other._store):
-                if self._is_expired(key) or other._is_expired(key):
-                    if self._is_expired(key) != other._is_expired(key):
-                        changed.add(key)
-                    continue
-                if self.get(key) != other.get(key):
-                    changed.add(key)
-            logger.debug("DIFF found %d keys", len(changed))
-            return changed
-        finally:
-            self._release_read()
+        self_state, _ = self._visibility_snapshot()
+        other_state, _ = other._visibility_snapshot()
+        changed = set()
+        for key in set(self_state) | set(other_state):
+            if self_state.get(key, _MISSING) != other_state.get(key, _MISSING):
+                changed.add(key)
+        logger.debug("DIFF found %d keys", len(changed))
+        return changed
 
     def diff_detailed(self, other: "ChronoMap") -> List[Tuple[Any, Any, Any]]:
         """(key, other's value, self's value) for every key that differs."""
         if not isinstance(other, ChronoMap):
             raise ChronoMapTypeError("Expected ChronoMap instance for diff_detailed.")
-        self._acquire_read()
-        try:
-            changes = []
-            for key in set(self._store) | set(other._store):
-                if self._is_expired(key) or other._is_expired(key):
-                    continue
-                old_val = other.get(key)
-                new_val = self.get(key)
-                if old_val != new_val:
-                    changes.append((key, old_val, new_val))
-            return changes
-        finally:
-            self._release_read()
+        self_state, self_expired = self._visibility_snapshot()
+        other_state, other_expired = other._visibility_snapshot()
+        changes = []
+        for key in set(self_state) | set(other_state) | self_expired | other_expired:
+            if key in self_expired or key in other_expired:
+                continue
+            old_val = other_state.get(key, _MISSING)
+            new_val = self_state.get(key, _MISSING)
+            if old_val != new_val:
+                changes.append(
+                    (
+                        key,
+                        None if old_val is _MISSING else old_val,
+                        None if new_val is _MISSING else new_val,
+                    )
+                )
+        return changes
 
     # -- merge ---------------------------------------------------------------
 
@@ -762,31 +959,39 @@ class ChronoMap:
         if strategy not in ("timestamp", "overwrite"):
             raise ChronoMapValueError(f"Invalid merge strategy: {strategy}")
 
+        other._acquire_read()
+        try:
+            other_store = deepcopy(other._store)
+            other_ttl = deepcopy(other._ttl)
+        finally:
+            other._release_read()
+
         self._acquire_write()
         try:
             if strategy == "timestamp":
-                for key, other_versions in other._store.items():
-                    target_versions = self._store.setdefault(key, [])
-                    for ts, val in other_versions:
-                        if not target_versions or ts >= target_versions[-1][0]:
-                            target_versions.append((ts, val))
-                        else:
-                            times = [v[0] for v in target_versions]
-                            idx = bisect.bisect_right(times, ts)
-                            target_versions.insert(idx, (ts, val))
+                for key, other_versions in other_store.items():
+                    target_versions = self._store.get(key, [])
+                    if other_versions:
+                        self._store[key] = list(
+                            heapq.merge(target_versions, other_versions, key=lambda item: item[0])
+                        )
                     self._auto_prune(key)
+                    self._stats["writes"] += len(other_versions)
 
-                for key, expiry in other._ttl.items():
+                for key, expiry in other_ttl.items():
                     if key not in self._ttl or expiry > self._ttl[key]:
                         self._ttl[key] = expiry
             else:  # overwrite
-                for key, versions in other._store.items():
-                    self._store[key] = deepcopy(versions)
-                for key, expiry in other._ttl.items():
+                for key, versions in other_store.items():
+                    self._store[key] = versions
+                    self._auto_prune(key)
+                    self._stats["writes"] += len(versions)
+                for key, expiry in other_ttl.items():
                     self._ttl[key] = expiry
 
             if self._cache:
                 self._cache.clear()
+            self._memory_monitor.check_memory(self._store, self._ttl)
 
             logger.debug("MERGE completed with strategy=%s", strategy)
         finally:
@@ -804,6 +1009,7 @@ class ChronoMap:
 
     def history(self, key: Any) -> List[Tuple[float, Any]]:
         """Full (timestamp, value) history for a key."""
+        self._validate_key(key)
         self._acquire_read()
         try:
             if self._is_expired(key):
@@ -869,9 +1075,13 @@ class ChronoMap:
         if self._ttl_cleanup_thread:
             stats["ttl_cleanup_count"] = self._ttl_cleanup_thread.cleaned_count
 
-        stats["total_keys"] = len(self)
-        stats["total_versions"] = sum(len(v) for v in self._store.values())
-        stats["expired_keys"] = sum(1 for k in self._ttl if self._is_expired(k))
+        self._acquire_read()
+        try:
+            stats["total_keys"] = sum(1 for key in self._store if not self._is_expired(key))
+            stats["total_versions"] = sum(len(versions) for versions in self._store.values())
+            stats["expired_keys"] = sum(1 for key in self._ttl if self._is_expired(key))
+        finally:
+            self._release_read()
         return stats
 
     def reset_stats(self) -> None:
@@ -950,6 +1160,7 @@ class ChronoMap:
         yield from items_list
 
     def iter_history(self, key: Any) -> Iterator[Tuple[float, Any]]:
+        self._validate_key(key)
         self._acquire_read()
         try:
             versions = [] if self._is_expired(key) else list(self._store.get(key, []))
@@ -1057,8 +1268,9 @@ class ChronoMap:
         **kwargs,
     ) -> "ChronoMap":
         """Reconstruct a ChronoMap from to_dict() output (dict or compressed bytes)."""
+        payload: Any = data
         if isinstance(data, bytes):
-            decompressors = {
+            decompressors: Dict[bytes, Callable[[bytes], bytes]] = {
                 b"zlib": zlib.decompress,
                 b"gzip": gzip.decompress,
                 b"bz2": bz2.decompress,
@@ -1073,21 +1285,39 @@ class ChronoMap:
             else:
                 # Legacy files saved before the method marker existed.
                 decompressed = zlib.decompress(data)
-            data = pickle.loads(decompressed)
+            payload = pickle.loads(decompressed)
 
-        instance = cls(debug=debug, use_rwlock=use_rwlock, max_history=data.get("max_history"), **kwargs)
-        raw_store = deepcopy(data.get("store", {}))
-        instance._store = {
-            key: [(version[0], version[1]) for version in versions] for key, versions in raw_store.items()
-        }
-        instance._ttl = deepcopy(data.get("ttl", {}))
-        instance._snapshot_time = data.get("snapshot_time")
+        if not isinstance(payload, dict):
+            raise ChronoMapTypeError("Serialized data must be a mapping")
+        raw_store = payload.get("store", {})
+        raw_ttl = payload.get("ttl", {})
+        if not isinstance(raw_store, dict) or not isinstance(raw_ttl, dict):
+            raise ChronoMapTypeError("Serialized store and ttl must be mappings")
+
+        normalized_store: Dict[Any, List[Tuple[float, Any]]] = {}
+        for key, versions in raw_store.items():
+            if not isinstance(versions, (list, tuple)):
+                raise ChronoMapValueError(f"History for key {key!r} must be a sequence")
+            normalized = []
+            for version in versions:
+                if not isinstance(version, (list, tuple)) or len(version) != 2:
+                    raise ChronoMapValueError(f"Malformed version for key {key!r}: {version!r}")
+                normalized.append((version[0], version[1]))
+            normalized_store[key] = normalized
+
+        instance = cls(debug=debug, use_rwlock=use_rwlock, max_history=payload.get("max_history"), **kwargs)
+        instance._store = normalized_store
+        instance._ttl = dict(raw_ttl)
+        instance._snapshot_time = payload.get("snapshot_time")
         return instance
 
     def save_json(self, file_path: Union[str, Path]) -> None:
         """Save to a JSON file. Keys are coerced to strings (JSON has no non-string keys)."""
         path = Path(file_path)
-        data = self.to_dict()
+        raw_data = self.to_dict()
+        if not isinstance(raw_data, dict):
+            raise ChronoMapTypeError("Uncompressed serialization must produce a mapping")
+        data = raw_data
         json_data = {
             "store": {str(k): v for k, v in data["store"].items()},
             "ttl": {str(k): v for k, v in data["ttl"].items()},
@@ -1108,7 +1338,7 @@ class ChronoMap:
             json_data = json.load(f)
         data = {
             "store": json_data["store"],
-            "ttl": json_data["ttl"],
+            "ttl": json_data.get("ttl", {}),
             "snapshot_time": json_data.get("snapshot_time"),
             "max_history": json_data.get("max_history"),
         }
