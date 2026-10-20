@@ -1,0 +1,274 @@
+# Testing
+
+ChronoMap uses pytest for behavior tests, coverage for statement coverage,
+black for formatting, and mypy for type checking. The same commands run in
+CI, so a clean local run is a good preview of a pull request.
+
+## Set up the environment
+
+From the repository root:
+
+```bash
+python -m venv .venv
+```
+
+Activate it:
+
+```bash
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Install the package in editable mode with the development and pandas extras:
+
+```bash
+pip install -e ".[dev,pandas]"
+```
+
+`dev` installs pytest, pytest-asyncio, pytest-cov, black, and mypy. `pandas`
+is optional at runtime but the test suite covers `to_dataframe()`, so CI
+installs it.
+
+To verify the interpreter:
+
+```bash
+python --version
+python -c "import chronomap; print(chronomap.__version__)"
+```
+
+The project supports Python 3.8 and newer. CI runs the full suite on 3.8
+through 3.12.
+
+## Run the suite
+
+```bash
+pytest tests/ -v
+```
+
+Run with the coverage report used by CI:
+
+```bash
+pytest tests/ --cov=chronomap --cov-report=term-missing
+```
+
+The current `main` branch collects **254 tests** and reports **100% statement
+coverage**. The numbers will grow as features are added; the expectation is
+that new behavior comes with tests and does not lower coverage.
+
+Useful variants while working:
+
+```bash
+pytest tests/ -x -vv              # stop on the first failure
+pytest tests/ --lf                # rerun the last failed tests
+pytest tests/ --ff                # failed first, then the rest
+pytest tests/ -k "ttl or expired" # select by name expression
+pytest tests/ -s                  # do not capture stdout/stderr
+pytest tests/ --pdb               # drop into the debugger on failure
+```
+
+Run one file, class, or test:
+
+```bash
+pytest tests/test_basic.py -v
+pytest tests/test_chronomap.py::TestTTL -v
+pytest tests/test_basic.py::test_time_travel -vv
+```
+
+## Test layout
+
+| File | Focus |
+| --- | --- |
+| `tests/test_basic.py` | Small smoke tests for core reads, writes, history, TTL, snapshots, and async basics. |
+| `tests/test_chronomap.py` | The main behavior suite: storage, cache, pruning, TTL, memory, batch operations, queries, snapshots, merge, magic methods, persistence, concurrency, async, and integration. |
+| `tests/test_coverage_gaps.py` | Edge and defensive branches: cache eviction, lock ordering, memory estimate edge cases, cleanup-thread lifecycle, strict reads, invalid inputs, expiry races, merge TTLs, async validation, and CLI entry paths. |
+| `tests/test_cli.py` | CLI parsing, formatting, color helpers, and file display. |
+
+Tests use pytest fixtures such as `tmp_path` and `capsys`, not a project-wide
+fixture module. Each test creates its own map, which keeps tests independent
+and makes ordering irrelevant.
+
+## Markers
+
+`pyproject.toml` registers the semantic markers:
+
+| Marker | Meaning | Current selection |
+| --- | --- | --- |
+| `core` | Core read/write/query/merge/history behavior | 149 |
+| `cache` | `LRUCache` behavior | 8 |
+| `lock` | `RWLock` and concurrency behavior | 5 |
+| `memory` | Memory monitor and size estimation | 8 |
+| `ttl` | TTL expiry and cleanup thread | 20 |
+| `snapshot` | Snapshot, rollback, and diff | 13 |
+| `async_map` | `AsyncChronoMap` behavior | 12 |
+| `cli` | CLI behavior | 16 |
+
+These are selection sizes, not a partition: markers also drive the CI
+subsystem job, and some async tests carry only `asyncio`, so the counts do not
+add up to the full collection.
+
+Run one subsystem:
+
+```bash
+pytest tests/ -v -m core
+pytest tests/ -v -m ttl
+pytest tests/ -v -m "snapshot or lock"
+```
+
+When adding a new area, register its marker in `pyproject.toml` and add a
+matching path filter in `.github/workflows/tests.yml`. Existing filters map
+source files to `core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
+`async_map`, and `cli`.
+
+## Async tests
+
+`pytest-asyncio` is installed and `asyncio_mode = "auto"` is set in
+`pyproject.toml`. The existing async tests still use explicit
+`@pytest.mark.asyncio` markers, which works in auto mode and makes the intent
+obvious.
+
+```python
+import pytest
+
+from chronomap import AsyncChronoMap
+
+
+@pytest.mark.asyncio
+async def test_async_put_get():
+    cm = AsyncChronoMap()
+    await cm.put("key", "value")
+    assert await cm.get("key") == "value"
+```
+
+Do not share an `AsyncChronoMap` across event loops. Create it inside the test
+or inside the loop that uses it.
+
+## Writing reliable tests
+
+### Use explicit timestamps
+
+Most behavior does not need wall-clock time. Pass explicit timestamps so tests
+are deterministic:
+
+```python
+cm = ChronoMap(enable_ttl_cleanup=False)
+cm.put("key", "old", timestamp=100)
+cm.put("key", "new", timestamp=200)
+
+assert cm.get("key", timestamp=150) == "old"
+assert cm.get("key") == "new"
+```
+
+### Disable background work when it is not under test
+
+Background TTL cleanup and lazy cache state can make assertions timing
+dependent. For ordinary read/write tests, start with:
+
+```python
+cm = ChronoMap(enable_ttl_cleanup=False, cache_size=0)
+```
+
+Turn those features back on in the tests that specifically cover them.
+
+### Test TTL with short intervals
+
+TTL tests need real time to pass. Use a short TTL and a short sleep, or call
+`clean_expired_keys()` explicitly:
+
+```python
+import time
+
+cm = ChronoMap(enable_ttl_cleanup=False)
+cm.put("temporary", "value", ttl=0.01)
+time.sleep(0.02)
+
+assert cm.get("temporary") is None
+```
+
+Prefer the smallest sleep that is reliable on CI. Do not depend on the
+background thread firing at an exact moment; call `clean_expired_keys()` when
+the test is about sweeping rather than scheduling.
+
+### Test public behavior, not internals
+
+Assert through the public API where possible. Tests in
+`test_coverage_gaps.py` reach into private helpers only to exercise defensive
+branches that are otherwise unreachable; new features should not need that.
+
+### Cover the edges
+
+A new operation should have tests for:
+
+- the normal case
+- a missing key
+- an expired key, when TTL applies
+- a timestamp before the first version, when history applies
+- invalid inputs, if the operation validates them
+- concurrency or async interleaving, if the operation shares state
+
+### Keep regression tests honest
+
+A regression test should fail on the old behavior and pass on the fix. If you
+cannot make it fail first, the test may be asserting something weaker than the
+bug.
+
+## Formatting and type checking
+
+Check formatting:
+
+```bash
+black --check src/ tests/
+```
+
+Apply formatting:
+
+```bash
+black src/ tests/
+```
+
+The project uses a 110-character line length and targets Python 3.8 syntax.
+
+Run mypy:
+
+```bash
+mypy src/chronomap --ignore-missing-imports
+```
+
+On the current `main` branch, mypy reports 16 pre-existing errors in
+`core.py` and `_snapshot.py`. The CI type-check step is marked
+`continue-on-error: true`, so it reports but does not fail the build. New code
+should not add errors; run mypy on the files you touch and keep them clean.
+
+## What CI runs
+
+The workflow in `.github/workflows/tests.yml` has four jobs:
+
+1. **Detect changed subsystems**: maps changed paths to markers.
+2. **Subsystem tests**: runs only the selected marker groups on Python 3.12.
+3. **Full suite**: runs all tests with coverage on Python 3.8, 3.9, 3.10,
+   3.11, and 3.12. The 3.12 run uploads `coverage.xml`.
+4. **Formatting and type checking**: `black --check src/ tests/` is required;
+   mypy is informational.
+
+The subsystem job is a fast feedback loop for small changes. The full-suite
+job is the source of truth, especially when a change crosses modules.
+
+## Before opening a pull request
+
+```bash
+pytest tests/ --cov=chronomap --cov-report=term-missing
+black --check src/ tests/
+mypy src/chronomap --ignore-missing-imports
+```
+
+Then confirm:
+
+- the new tests fail on the old code and pass on the new code
+- no unrelated files were reformatted
+- no test depends on ordering, wall-clock precision, or network access
+- a new marker and CI path filter were added if you introduced a subsystem
+- public API changes are reflected in `docs/API.md`
+
+See `CONTRIBUTING.md` for the review and PR conventions.
