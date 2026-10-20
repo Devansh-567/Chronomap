@@ -321,6 +321,22 @@ class Query:
             raise QueryError("Query is empty")
         return default
 
+    def last(self, default: Any = _MISSING) -> Any:
+        items = self._evaluate()
+        if items:
+            return items[-1][1]
+        if default is _MISSING:
+            raise QueryError("Query is empty")
+        return default
+
+    def last_item(self, default: Any = _MISSING) -> Any:
+        items = self._evaluate()
+        if items:
+            return items[-1]
+        if default is _MISSING:
+            raise QueryError("Query is empty")
+        return default
+
     def any(self, predicate: Optional[Callable[[Any, Any], bool]] = None) -> bool:
         if predicate is None:
             return bool(self._evaluate())
