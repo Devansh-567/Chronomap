@@ -47,6 +47,7 @@ jobs:
             cli:
               - 'src/chronomap/cli.py'
               - 'tests/test_cli.py'
+              - 'tests/test_cli_commands.py'
 
   modules:
     name: "Subsystem: ${{ matrix.marker }}"
