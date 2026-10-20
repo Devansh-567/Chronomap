@@ -303,6 +303,9 @@ def _normalize_payload(payload: Any, encoded: bool) -> Dict[str, Any]:
     if max_history is not None:
         if isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 1:
             raise CorruptArchiveError("max_history must be a positive integer or null")
+    created_at = payload.get("created_at")
+    if created_at is not None:
+        created_at = _require_number(created_at, "created_at")
     snapshot_time = payload.get("snapshot_time")
     if snapshot_time is not None:
         snapshot_time = _require_number(snapshot_time, "snapshot_time")
@@ -348,7 +351,7 @@ def _normalize_payload(payload: Any, encoded: bool) -> Dict[str, Any]:
         entries.append(entry)
 
     return {
-        "created_at": payload.get("created_at"),
+        "created_at": created_at,
         "snapshot_time": snapshot_time,
         "max_history": max_history,
         "entries": entries,
