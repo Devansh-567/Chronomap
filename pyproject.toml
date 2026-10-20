@@ -53,6 +53,7 @@ markers = [
     "snapshot: snapshot, rollback, and diff tests",
     "async_map: AsyncChronoMap tests",
     "cli: command-line interface tests",
+    "query: fluent value and version query tests",
 ]
 
 [tool.black]

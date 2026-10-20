@@ -23,6 +23,7 @@ from ._cache import LRUCache
 from ._lock import RWLock
 from ._snapshot import SnapshotContext
 from ._version import __version__
+from .query import Query, QueryError, VersionQuery, query, versions
 from .exceptions import (
     ChronoMapError,
     ChronoMapKeyError,
@@ -39,6 +40,11 @@ __all__ = [
     "ChronoMapTypeError",
     "ChronoMapValueError",
     "ChronoMapMemoryError",
+    "Query",
+    "VersionQuery",
+    "QueryError",
+    "query",
+    "versions",
     "SnapshotContext",
     "RWLock",
     "LRUCache",
