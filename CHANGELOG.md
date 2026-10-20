@@ -162,6 +162,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   could corrupt the source map's history in the process. Added a
   regression test (`test_merge_timestamp_strategy_does_not_crash_on_out_of_order_writes`).
 
+### Added (CLI)
+- The CLI is no longer limited to `show`: added `get`, `history`, `put`,
+  `delete`, `keys`, `stats`, `prune`, `diff`, and `merge`, each with a
+  `--json` mode for scripting.
+- Save files are replaced atomically through a temporary file in the
+  destination directory, so a failed write leaves the previous file
+  intact instead of truncating it.
+- Keys are parsed as JSON by default (so `1` reads an integer key), with
+  `--literal-key` for string keys that happen to look like numbers.
+- `--no-color` and `NO_COLOR` disable ANSI output; colors are also
+  disabled automatically when stdout is not a terminal.
+- `tests/test_cli_commands.py`: 61 end-to-end cases covering every
+  subcommand, JSON output, pickle paths, atomic failure handling, bad
+  input, and the error/exit-code boundary.
+
 ### Current test status
 246 tests passing, 100% coverage (`pytest tests/ --cov=chronomap`). One
 line in `_lock.py` is marked `# pragma: no cover` rather than covered
