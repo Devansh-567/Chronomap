@@ -51,6 +51,7 @@ markers = [
     "memory: memory monitoring / estimation tests",
     "ttl: TTL expiry and background cleanup thread tests",
     "snapshot: snapshot, rollback, and diff tests",
+    "persistence: versioned archive and codec tests",
     "async_map: AsyncChronoMap tests",
     "cli: command-line interface tests",
 ]

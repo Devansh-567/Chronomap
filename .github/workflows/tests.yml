@@ -44,6 +44,9 @@ jobs:
               - 'src/chronomap/_snapshot.py'
             async_map:
               - 'src/chronomap/asynchronous.py'
+            persistence:
+              - 'src/chronomap/persistence.py'
+              - 'tests/test_persistence.py'
             cli:
               - 'src/chronomap/cli.py'
               - 'tests/test_cli.py'
