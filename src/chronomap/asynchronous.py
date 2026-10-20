@@ -27,6 +27,7 @@ import math
 import pickle
 import weakref
 import zlib
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -409,6 +410,19 @@ class AsyncChronoMap:
 
         for key, old_value, value, event_ts in events:
             await self._fire_callbacks(key, old_value, value, event_ts)
+
+    async def update(
+        self,
+        other: Union[Mapping[Any, Any], Iterable[Tuple[Any, Any]]],
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        ttl: Optional[float] = None,
+    ) -> None:
+        """Update from a mapping or iterable of pairs, like ``dict.update()``."""
+        try:
+            items = dict(other)
+        except (TypeError, ValueError) as exc:
+            raise ChronoMapTypeError("update() requires a mapping or iterable of key/value pairs") from exc
+        await self.put_many(items, timestamp=timestamp, ttl=ttl)
 
     async def get(
         self,
