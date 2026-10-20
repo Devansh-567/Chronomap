@@ -54,6 +54,7 @@ markers = [
     "persistence: versioned archive and codec tests",
     "async_map: AsyncChronoMap tests",
     "cli: command-line interface tests",
+    "query: fluent value and version query tests",
 ]
 
 [tool.black]

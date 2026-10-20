@@ -89,6 +89,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Replaced deprecated `datetime.utcnow()` calls with
   `datetime.now(timezone.utc)`.
 
+### Added (Query engine)
+- `src/chronomap/query.py` — a fluent query layer over `ChronoMap`.
+  `query(cm, timestamp=...)` returns a lazy `Query` that filters values
+  as of one instant (including stored `None` values), while
+  `versions(cm, start=..., end=..., keys=...)` returns a `VersionQuery`
+  over row-level `(key, timestamp, value)` history. Both support
+  predicates, key globs/regexes, set membership, sorting, paging,
+  distinct/grouping/folding, numeric reductions, and conversion back to
+  a `ChronoMap`; `Query.at()` re-evaluates at another timestamp without
+  dropping the filters already applied.
+- `Query`, `VersionQuery`, `QueryError`, `query`, and `versions` are
+  exported from the package root.
+- `tests/test_query.py` — 59 cases covering value snapshots, stored
+  `None`, expired keys, every filter/sort/reducer, empty-query errors,
+  invalid arguments, version ranges, and rebuilding maps from history.
+- Added the `query` pytest marker and a matching subsystem path filter
+  in `.github/workflows/tests.yml`.
+
 ### Added
 - `chronomap/cli.py` — this was referenced in the old project structure
   and README but didn't exist in the code I had to work with. Written
