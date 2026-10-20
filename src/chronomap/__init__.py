@@ -21,6 +21,18 @@ from .asynchronous import AsyncChronoMap, AsyncSnapshotContext
 from .core import ChronoMap
 from ._cache import LRUCache
 from ._lock import RWLock
+from .persistence import (
+    ArchiveInfo,
+    CodecError,
+    CorruptArchiveError,
+    PersistenceError,
+    UnsupportedFormatError,
+    dump,
+    dumps,
+    inspect,
+    load,
+    loads,
+)
 from ._snapshot import SnapshotContext
 from ._version import __version__
 from .exceptions import (
@@ -43,5 +55,15 @@ __all__ = [
     "AsyncSnapshotContext",
     "RWLock",
     "LRUCache",
+    "ArchiveInfo",
+    "PersistenceError",
+    "UnsupportedFormatError",
+    "CorruptArchiveError",
+    "CodecError",
+    "dump",
+    "dumps",
+    "load",
+    "loads",
+    "inspect",
     "__version__",
 ]
