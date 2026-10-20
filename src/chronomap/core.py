@@ -623,6 +623,25 @@ class ChronoMap:
         finally:
             self._release_write()
 
+    def persist(self, key: Any) -> bool:
+        """Remove a key's TTL so it stops expiring. Returns True if a TTL was removed."""
+        self._validate_key(key)
+        self._acquire_write()
+        try:
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+                return False
+            if key not in self._ttl:
+                return False
+
+            del self._ttl[key]
+            if self._cache:
+                self._cache.invalidate(key)
+            logger.debug("PERSIST key=%r", key)
+            return True
+        finally:
+            self._release_write()
+
     # -- query & analytics --------------------------------------------------
 
     def query(
