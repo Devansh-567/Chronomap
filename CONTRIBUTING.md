@@ -8,7 +8,7 @@ intentionally light.
 - Add or update a test for whatever you changed. If you fixed a bug,
   a regression test that fails on `main` and passes on your branch is
   the single most useful thing you can include.
-- Run `pytest tests/ -v` and `black --check src/` locally.
+- Run `pytest tests/ -v` and `black --check src/ tests/` locally.
 - Keep PRs scoped to one thing. A 500-line PR that fixes a bug _and_
   reformats three unrelated files is much harder to review than two
   small PRs.
