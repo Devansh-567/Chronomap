@@ -32,6 +32,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `scripts/build_changelog_entry.py` — builds the name-free CHANGELOG
   section from merged PRs in a date window, grouped by label
   (Added/Changed/Fixed/Documentation/Maintenance).
+- `AsyncChronoMap` now mirrors the synchronous API: `get_many`,
+  `exists`, `setdefault`, and `pop` for batch reads and conditional
+  writes; TTL-aware `query`, `aggregate`, and `count`; history, range,
+  and latest-key views; `diff`, `diff_detailed`, and `merge`;
+  JSON/pickle persistence; async change callbacks; and async snapshot
+  rollback through `AsyncSnapshotContext`.
+- `tests/test_async_parity.py`: 84 asyncio tests covering awaited
+  locking, background TTL cleanup and cancellation, async callback
+  ordering, rollback, persistence errors, and parity with the
+  synchronous surface.
 - `ChronoMap.get_many()`, `exists()`, `setdefault()`, and `pop()` for
   dict-style batch reads and atomic conditional writes.
 - Constructor validation for `max_history`, `cache_size`,

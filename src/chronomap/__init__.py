@@ -17,7 +17,7 @@ See the README for the full walkthrough and the docs/ directory for
 API reference.
 """
 
-from .asynchronous import AsyncChronoMap
+from .asynchronous import AsyncChronoMap, AsyncSnapshotContext
 from .core import ChronoMap
 from ._cache import LRUCache
 from ._lock import RWLock
@@ -58,6 +58,7 @@ __all__ = [
     "query",
     "versions",
     "SnapshotContext",
+    "AsyncSnapshotContext",
     "RWLock",
     "LRUCache",
     "ArchiveInfo",

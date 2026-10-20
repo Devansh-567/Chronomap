@@ -50,6 +50,7 @@ jobs:
               - 'tests/test_core_correctness.py'
             async_map:
               - 'src/chronomap/asynchronous.py'
+              - 'tests/test_async_parity.py'
             persistence:
               - 'src/chronomap/persistence.py'
               - 'tests/test_persistence.py'

@@ -4,59 +4,212 @@
 
 """Asyncio version of ChronoMap.
 
-Deliberately a separate, simpler implementation rather than a wrapper
-around ChronoMap — trying to share code between a threading.Lock-based
-class and an asyncio.Lock-based class tends to produce something that's
-harder to reason about than just writing it twice. If that tradeoff ever
-stops being worth it, that's a good refactor to open an issue for.
+Deliberately a separate implementation rather than a wrapper around the
+threaded class: an asyncio.Lock is tied to one event loop and one task
+scheduling model, while the synchronous class is built around an
+RWLock and real OS threads. Sharing the storage logic would mean sharing
+the locking rules, and those rules are not interchangeable.
 """
 
 from __future__ import annotations
 
 import asyncio
 import bisect
+import bz2
+import contextlib
+import gzip
+import heapq
+import inspect
+import json
+import lzma
 import logging
+import math
+import pickle
+import weakref
+import zlib
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
-from .exceptions import ChronoMapKeyError, ChronoMapTypeError, ChronoMapValueError
+from ._cache import LRUCache
+from ._version import __version__
+from .exceptions import (
+    ChronoMapKeyError,
+    ChronoMapTypeError,
+    ChronoMapValueError,
+)
 
 logger = logging.getLogger(__name__)
+_CACHE_MISS = object()
+_MISSING = object()
+
+
+async def _async_ttl_cleanup_loop(chronomap_ref: "weakref.ref", interval: float) -> None:
+    """Wake on an interval and sweep expired keys without keeping the map alive."""
+    while True:
+        await asyncio.sleep(interval)
+        chronomap = chronomap_ref()
+        if chronomap is None:
+            return
+        try:
+            await chronomap.clean_expired_keys()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Error in async TTL cleanup task")
+
+
+class AsyncSnapshotContext:
+    """`async with cm.snapshot_context(): ...` rolls back if the block raises."""
+
+    def __init__(self, chronomap: "AsyncChronoMap") -> None:
+        self.chronomap = chronomap
+        self.snapshot: Optional["AsyncChronoMap"] = None
+
+    async def __aenter__(self) -> "AsyncChronoMap":
+        self.snapshot = await self.chronomap.snapshot()
+        return self.chronomap
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if exc_type is not None:
+            assert self.snapshot is not None
+            await self.chronomap.rollback(self.snapshot)
+        return False
 
 
 class AsyncChronoMap:
-    """Async counterpart to ChronoMap, for use inside asyncio applications."""
+    """Async counterpart to ChronoMap, for use inside asyncio applications.
 
-    def __init__(self, debug: bool = False, max_history: Optional[int] = None) -> None:
+    The store, TTL semantics, history ordering, callback surface, and
+    persistence helpers mirror ``ChronoMap``. The differences are the
+    ones asyncio forces: locks are awaited, snapshots are awaited, and the
+    optional cleanup task is tied to the running event loop.
+
+    Args:
+        debug: Enable debug logging.
+        max_history: Cap on versions kept per key.
+        cache_size: Read cache capacity; 0 disables it.
+        enable_ttl_cleanup: Start the background cleanup task on the first
+            write. Defaults to False because a task created in ``__init__``
+            would outlive maps built outside an event loop.
+        ttl_cleanup_interval: Seconds between cleanup passes.
+    """
+
+    def __init__(
+        self,
+        debug: bool = False,
+        max_history: Optional[int] = None,
+        cache_size: int = 1000,
+        enable_ttl_cleanup: bool = False,
+        ttl_cleanup_interval: float = 60.0,
+    ) -> None:
+        if max_history is not None and (
+            isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 1
+        ):
+            raise ChronoMapValueError("max_history must be a positive integer or None")
+        if isinstance(cache_size, bool) or not isinstance(cache_size, int) or cache_size < 0:
+            raise ChronoMapValueError("cache_size must be a non-negative integer")
+        if (
+            isinstance(ttl_cleanup_interval, bool)
+            or not isinstance(ttl_cleanup_interval, (int, float))
+            or not math.isfinite(ttl_cleanup_interval)
+            or ttl_cleanup_interval <= 0
+        ):
+            raise ChronoMapValueError("ttl_cleanup_interval must be a positive number")
+
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
         self._lock = asyncio.Lock()
         self._snapshot_time: Optional[float] = None
         self._debug = debug
         self._max_history = max_history
+        self._cache = LRUCache(capacity=cache_size) if cache_size > 0 else None
         self._change_callbacks: List[Callable] = []
         self._key_subscribers: Dict[Any, List[Callable]] = {}
-        self._stats = {"reads": 0, "writes": 0, "deletes": 0, "snapshots": 0, "auto_prunes": 0}
+        self._stats = {
+            "reads": 0,
+            "writes": 0,
+            "deletes": 0,
+            "snapshots": 0,
+            "auto_prunes": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+        }
+        self._enable_ttl_cleanup = enable_ttl_cleanup
+        self._ttl_cleanup_interval = float(ttl_cleanup_interval)
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self.cleaned_count = 0
 
         if debug:
             logger.setLevel(logging.DEBUG)
+            if not logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter("[AsyncChronoMap] %(levelname)s: %(message)s"))
+                logger.addHandler(handler)
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def _ensure_cleanup_task(self) -> None:
+        if not self._enable_ttl_cleanup:
+            return
+        if self._cleanup_task is not None and not self._cleanup_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cleanup_task = loop.create_task(
+            _async_ttl_cleanup_loop(weakref.ref(self), self._ttl_cleanup_interval)
+        )
+
+    def start_cleanup(self) -> None:
+        """Start the background cleanup task in the current event loop."""
+        self._enable_ttl_cleanup = True
+        self._ensure_cleanup_task()
+
+    def stop_cleanup(self) -> None:
+        """Cancel the background cleanup task without awaiting it."""
+        task = self._cleanup_task
+        self._cleanup_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def aclose(self) -> None:
+        """Cancel and await the cleanup task; safe to call more than once."""
+        task = self._cleanup_task
+        self._cleanup_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def __aenter__(self) -> "AsyncChronoMap":
+        self._ensure_cleanup_task()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> bool:
+        await self.aclose()
+        return False
+
+    # -- internal helpers ---------------------------------------------------
 
     def _current_time(self) -> float:
         return datetime.now(timezone.utc).timestamp()
 
     def _parse_timestamp(self, timestamp: Union[float, str, datetime]) -> float:
+        if isinstance(timestamp, bool):
+            raise ChronoMapTypeError("Timestamp must be numeric, got bool")
         if isinstance(timestamp, str):
             try:
                 return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 raise ChronoMapValueError(f"Invalid datetime string: {timestamp}")
-        elif isinstance(timestamp, datetime):
+        if isinstance(timestamp, datetime):
             return timestamp.timestamp()
-        elif isinstance(timestamp, (int, float)):
+        if isinstance(timestamp, (int, float)):
             return float(timestamp)
-        else:
-            raise ChronoMapTypeError(f"Invalid timestamp type: {type(timestamp)}")
+        raise ChronoMapTypeError(f"Invalid timestamp type: {type(timestamp)}")
 
     def _validate_key(self, key: Any) -> None:
         try:
@@ -64,10 +217,49 @@ class AsyncChronoMap:
         except TypeError:
             raise ChronoMapTypeError(f"Key must be hashable, got {type(key).__name__}")
 
+    def _validate_timestamp(self, timestamp: float) -> None:
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            raise ChronoMapTypeError(f"Timestamp must be numeric, got {type(timestamp).__name__}")
+        if not math.isfinite(timestamp):
+            raise ChronoMapValueError(f"Timestamp must be finite, got {timestamp}")
+
+    def _validate_ttl(self, ttl: Optional[float]) -> None:
+        if ttl is None:
+            return
+        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+            raise ChronoMapTypeError(f"TTL must be numeric, got {type(ttl).__name__}")
+        if not math.isfinite(ttl) or ttl <= 0:
+            raise ChronoMapValueError(f"TTL must be a positive finite number, got {ttl}")
+
+    def _validate_keep_last(self, keep_last: Optional[int]) -> None:
+        if keep_last is None:
+            return
+        if isinstance(keep_last, bool) or not isinstance(keep_last, int) or keep_last < 0:
+            raise ChronoMapValueError("keep_last must be a non-negative integer or None")
+
     def _is_expired(self, key: Any) -> bool:
         if key not in self._ttl:
             return False
         return self._current_time() >= self._ttl[key]
+
+    def _purge_if_expired(self, key: Any) -> None:
+        if self._is_expired(key):
+            self._store.pop(key, None)
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+
+    def _lookup_unlocked(self, key: Any, ts: float) -> Tuple[bool, Any]:
+        if self._is_expired(key):
+            return False, None
+        versions = self._store.get(key, [])
+        if not versions:
+            return False, None
+        times = [v[0] for v in versions]
+        idx = bisect.bisect_right(times, ts) - 1
+        if idx < 0:
+            return False, None
+        return True, versions[idx][1]
 
     def _auto_prune(self, key: Any) -> None:
         if self._max_history is None:
@@ -77,164 +269,36 @@ class AsyncChronoMap:
             removed = len(versions) - self._max_history
             self._store[key] = versions[-self._max_history :]
             self._stats["auto_prunes"] += 1
+            if self._cache:
+                self._cache.invalidate(key)
             logger.debug("AUTO_PRUNE key=%r removed %d old versions", key, removed)
 
     async def _fire_callbacks(self, key: Any, old_value: Any, value: Any, ts: float) -> None:
         for callback in list(self._change_callbacks):
-            if asyncio.iscoroutinefunction(callback):
-                await callback(key, old_value, value, ts)
-            else:
-                callback(key, old_value, value, ts)
+            try:
+                result = callback(key, old_value, value, ts)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Error in async change callback")
         for callback in list(self._key_subscribers.get(key, [])):
-            if asyncio.iscoroutinefunction(callback):
-                await callback(old_value, value, ts)
-            else:
-                callback(old_value, value, ts)
+            try:
+                result = callback(old_value, value, ts)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Error in async key subscriber callback for %r", key)
 
-    async def put(
-        self,
-        key: Any,
-        value: Any,
-        timestamp: Optional[Union[float, str, datetime]] = None,
-        ttl: Optional[float] = None,
-    ) -> None:
-        self._validate_key(key)
-        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
-
-        async with self._lock:
-            # An expired key is invisible to readers, so a write to it must
-            # start clean; otherwise the stale TTL makes the new value
-            # expire instantly.
-            if self._is_expired(key):
-                self._store.pop(key, None)
-                self._ttl.pop(key, None)
-
-            old_value = None
-            if key in self._store and self._store[key]:
-                old_value = self._store[key][-1][1]
-
-            versions = self._store.setdefault(key, [])
-            if not versions or ts >= versions[-1][0]:
-                versions.append((ts, value))
-            else:
-                times = [v[0] for v in versions]
-                idx = bisect.bisect_right(times, ts)
-                versions.insert(idx, (ts, value))
-
-            if ttl is not None:
-                if ttl <= 0:
-                    raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
-                self._ttl[key] = self._current_time() + ttl
-
-            self._auto_prune(key)
-            self._stats["writes"] += 1
-
-        await self._fire_callbacks(key, old_value, value, ts)
-
-    async def put_many(
-        self,
-        items: Dict[Any, Any],
-        timestamp: Optional[Union[float, str, datetime]] = None,
-        ttl: Optional[float] = None,
-    ) -> None:
-        for key, value in items.items():
-            await self.put(key, value, timestamp=timestamp, ttl=ttl)
-
-    async def get(
-        self,
-        key: Any,
-        timestamp: Optional[Union[float, str, datetime]] = None,
-        default: Any = None,
-        *,
-        strict: bool = False,
-    ) -> Any:
-        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
-
-        async with self._lock:
-            if self._is_expired(key):
-                self._store.pop(key, None)
-                self._ttl.pop(key, None)
-                if strict:
-                    raise ChronoMapKeyError(key)
-                return default
-
-            versions = self._store.get(key, [])
-            if not versions:
-                if strict:
-                    raise ChronoMapKeyError(key)
-                return default
-
-            times = [v[0] for v in versions]
-            idx = bisect.bisect_right(times, ts) - 1
-            if idx < 0:
-                if strict:
-                    raise ChronoMapKeyError(key)
-                return default
-
-            self._stats["reads"] += 1
-            return versions[idx][1]
-
-    async def get_or_set(
-        self, key: Any, default_factory: Callable[[], Any], ttl: Optional[float] = None
-    ) -> Any:
-        self._validate_key(key)
-        if not callable(default_factory):
-            raise ChronoMapTypeError("default_factory must be callable")
-        if ttl is not None and ttl <= 0:
-            raise ChronoMapValueError(f"TTL must be positive, got {ttl}")
-
-        ts = self._current_time()
-
-        async with self._lock:
-            if self._is_expired(key):
-                self._store.pop(key, None)
-                self._ttl.pop(key, None)
-
-            versions = self._store.get(key, [])
-            if versions:
-                self._stats["reads"] += 1
-                return versions[-1][1]
-
-            value = default_factory()
-            if asyncio.iscoroutine(value):
-                value = await value
-
-            self._store[key] = [(ts, value)]
-            if ttl is not None:
-                self._ttl[key] = self._current_time() + ttl
-
-            self._auto_prune(key)
-            self._stats["writes"] += 1
-
-        await self._fire_callbacks(key, None, value, ts)
-        return value
-
-    async def get_or_default(self, key: Any, default: Any, ttl: Optional[float] = None) -> Any:
-        factory = default if callable(default) else lambda: default
-        return await self.get_or_set(key, factory, ttl=ttl)
-
-    async def delete(self, key: Any) -> bool:
-        async with self._lock:
-            existed = key in self._store
-            if existed:
-                del self._store[key]
-                self._ttl.pop(key, None)
-                self._stats["deletes"] += 1
-            return existed
-
-    async def snapshot(self) -> "AsyncChronoMap":
-        async with self._lock:
-            snap = AsyncChronoMap(debug=self._debug, max_history=self._max_history)
-            snap._store = deepcopy(self._store)
-            snap._ttl = deepcopy(self._ttl)
-            snap._snapshot_time = self._current_time()
-            self._stats["snapshots"] += 1
-            return snap
+    # -- event hooks --------------------------------------------------------
 
     def on_change(self, callback: Callable) -> None:
+        """Register a sync or async callback fired on every write."""
+        if not callable(callback):
+            raise ChronoMapTypeError("Change callback must be callable")
         self._change_callbacks.append(callback)
 
     def subscribe(self, key: Any, callback: Callable) -> None:
+        """Register a sync or async callback for one key."""
         self._validate_key(key)
         if not callable(callback):
             raise ChronoMapTypeError("Subscriber callback must be callable")
@@ -253,20 +317,879 @@ class AsyncChronoMap:
             del self._key_subscribers[key]
         return True
 
-    async def keys(self) -> List[Any]:
+    def remove_change_callback(self, callback: Callable) -> bool:
+        try:
+            self._change_callbacks.remove(callback)
+            return True
+        except ValueError:
+            return False
+
+    # -- reads and writes ---------------------------------------------------
+
+    async def put(
+        self,
+        key: Any,
+        value: Any,
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        ttl: Optional[float] = None,
+    ) -> None:
+        """Store a value at the given timestamp (defaults to now)."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        self._ensure_cleanup_task()
+
         async with self._lock:
-            return [k for k in self._store if not self._is_expired(k)]
+            self._purge_if_expired(key)
+            old_value = None
+            if key in self._store and self._store[key]:
+                old_value = self._store[key][-1][1]
+
+            versions = self._store.setdefault(key, [])
+            if not versions or ts >= versions[-1][0]:
+                versions.append((ts, value))
+            else:
+                times = [v[0] for v in versions]
+                idx = bisect.bisect_right(times, ts)
+                versions.insert(idx, (ts, value))
+
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+
+            self._auto_prune(key)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["writes"] += 1
+
+        await self._fire_callbacks(key, old_value, value, ts)
+
+    async def put_many(
+        self,
+        items: Dict[Any, Any],
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        ttl: Optional[float] = None,
+    ) -> None:
+        """Insert multiple pairs under a single lock acquisition."""
+        self._validate_ttl(ttl)
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        keys = list(items.keys())
+        for key in keys:
+            self._validate_key(key)
+        self._ensure_cleanup_task()
+
+        events: List[Tuple[Any, Any, Any, float]] = []
+        async with self._lock:
+            for key in keys:
+                value = items[key]
+                self._purge_if_expired(key)
+
+                old_value = None
+                if key in self._store and self._store[key]:
+                    old_value = self._store[key][-1][1]
+
+                versions = self._store.setdefault(key, [])
+                if not versions or ts >= versions[-1][0]:
+                    versions.append((ts, value))
+                else:
+                    times = [v[0] for v in versions]
+                    idx = bisect.bisect_right(times, ts)
+                    versions.insert(idx, (ts, value))
+
+                if ttl is not None:
+                    self._ttl[key] = self._current_time() + ttl
+
+                self._auto_prune(key)
+                if self._cache:
+                    self._cache.invalidate(key)
+                events.append((key, old_value, value, ts))
+
+            self._stats["writes"] += len(keys)
+
+        for key, old_value, value, event_ts in events:
+            await self._fire_callbacks(key, old_value, value, event_ts)
+
+    async def get(
+        self,
+        key: Any,
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        default: Any = None,
+        *,
+        strict: bool = False,
+    ) -> Any:
+        """Retrieve the value for a key at a timestamp, with the read cache."""
+        self._validate_key(key)
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        cache_key = (key, None if timestamp is None else ts)
+
+        async with self._lock:
+            if self._is_expired(key):
+                if self._cache:
+                    self._cache.invalidate(key)
+                if strict:
+                    raise ChronoMapKeyError(key)
+                return default
+
+            if self._cache:
+                cached = self._cache.get(cache_key, _CACHE_MISS)
+                if cached is not _CACHE_MISS:
+                    self._stats["cache_hits"] += 1
+                    self._stats["reads"] += 1
+                    return cached
+                self._stats["cache_misses"] += 1
+
+            found, value = self._lookup_unlocked(key, ts)
+            if not found:
+                if strict:
+                    raise ChronoMapKeyError(key)
+                return default
+
+            if self._cache:
+                self._cache.put(cache_key, value)
+            self._stats["reads"] += 1
+            return value
+
+    async def get_many(
+        self,
+        keys: Iterable[Any],
+        timestamp: Optional[Union[float, str, datetime]] = None,
+        *,
+        strict: bool = False,
+    ) -> Dict[Any, Any]:
+        """Read several keys at one timestamp; missing keys are omitted unless strict."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        result: Dict[Any, Any] = {}
+        missing: List[Any] = []
+
+        async with self._lock:
+            for key in keys:
+                self._validate_key(key)
+                found, value = self._lookup_unlocked(key, ts)
+                if found:
+                    result[key] = value
+                elif strict:
+                    missing.append(key)
+
+        if missing:
+            raise ChronoMapKeyError(missing[0])
+        return result
+
+    async def exists(self, key: Any, timestamp: Optional[Union[float, str, datetime]] = None) -> bool:
+        """True when the key resolves to a value at the timestamp."""
+        self._validate_key(key)
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        async with self._lock:
+            return self._lookup_unlocked(key, ts)[0]
+
+    async def get_or_set(
+        self, key: Any, default_factory: Callable[[], Any], ttl: Optional[float] = None
+    ) -> Any:
+        """Return the current value, or create/store one via default_factory()."""
+        self._validate_key(key)
+        if not callable(default_factory):
+            raise ChronoMapTypeError("default_factory must be callable")
+        self._validate_ttl(ttl)
+        ts = self._current_time()
+        self._ensure_cleanup_task()
+        value: Any = None
+
+        async with self._lock:
+            self._purge_if_expired(key)
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats["reads"] += 1
+                return versions[-1][1]
+
+        value = default_factory()
+        if inspect.isawaitable(value):
+            value = await value
+
+        async with self._lock:
+            self._purge_if_expired(key)
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats["reads"] += 1
+                return versions[-1][1]
+
+            ts = self._current_time()
+            self._store[key] = [(ts, value)]
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+
+            self._auto_prune(key)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["writes"] += 1
+
+        await self._fire_callbacks(key, None, value, ts)
+        return value
+
+    async def get_or_default(self, key: Any, default: Any, ttl: Optional[float] = None) -> Any:
+        factory = default if callable(default) else lambda: default
+        return await self.get_or_set(key, factory, ttl=ttl)
+
+    async def setdefault(self, key: Any, default: Any = None, ttl: Optional[float] = None) -> Any:
+        """Return the latest value, inserting `default` first when absent."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        ts = self._current_time()
+        self._ensure_cleanup_task()
+        created = False
+
+        async with self._lock:
+            if self._is_expired(key):
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+
+            versions = self._store.get(key, [])
+            if versions:
+                self._stats["reads"] += 1
+                return versions[-1][1]
+
+            self._store[key] = [(ts, default)]
+            if ttl is not None:
+                self._ttl[key] = self._current_time() + ttl
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["writes"] += 1
+            created = True
+
+        if created:
+            await self._fire_callbacks(key, None, default, ts)
+        return default
+
+    async def pop(self, key: Any, default: Any = _MISSING) -> Any:
+        """Return the current value and erase the key, or return `default` if absent."""
+        self._validate_key(key)
+        async with self._lock:
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+            found, value = self._lookup_unlocked(key, self._current_time())
+            if not found:
+                if default is _MISSING:
+                    raise ChronoMapKeyError(key)
+                return default
+
+            del self._store[key]
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["deletes"] += 1
+            return value
+
+    async def delete(self, key: Any) -> bool:
+        """Delete all history for a key. Returns True if a live key was removed."""
+        self._validate_key(key)
+        async with self._lock:
+            if key not in self._store:
+                return False
+            if self._is_expired(key):
+                self._purge_if_expired(key)
+                return False
+
+            del self._store[key]
+            self._ttl.pop(key, None)
+            if self._cache:
+                self._cache.invalidate(key)
+            self._stats["deletes"] += 1
+            return True
+
+    async def delete_many(self, keys: List[Any]) -> int:
+        """Delete multiple keys under one lock; expired keys are skipped."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        count = 0
+        async with self._lock:
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    self._purge_if_expired(key)
+                    continue
+                del self._store[key]
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                count += 1
+                self._stats["deletes"] += 1
+        return count
+
+    # -- queries ------------------------------------------------------------
+
+    async def query(
+        self,
+        predicate: Callable[[Any, Any], Any],
+        timestamp: Optional[Union[float, str, datetime]] = None,
+    ) -> Dict[Any, Any]:
+        """{key: value} for every key where predicate(key, value) is truthy."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        result = {}
+        async with self._lock:
+            pairs = []
+            for key in self._store:
+                found, value = self._lookup_unlocked(key, ts)
+                if found:
+                    pairs.append((key, value))
+        for key, value in pairs:
+            keep = predicate(key, value)
+            if inspect.isawaitable(keep):
+                keep = await keep
+            if keep:
+                result[key] = value
+        return result
+
+    async def aggregate(
+        self,
+        func: Callable[[List[Any]], Any],
+        keys: Optional[List[Any]] = None,
+        timestamp: Optional[Union[float, str, datetime]] = None,
+    ) -> Any:
+        """Apply func to current values (optionally limited to `keys`)."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        async with self._lock:
+            target_keys = keys if keys is not None else list(self._store.keys())
+            values = []
+            for key in target_keys:
+                found, value = self._lookup_unlocked(key, ts)
+                if found:
+                    values.append(value)
+        if not values:
+            return None
+        result = func(values)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def count(
+        self,
+        predicate: Optional[Callable[[Any, Any], Any]] = None,
+        timestamp: Optional[Union[float, str, datetime]] = None,
+    ) -> int:
+        """Count live keys, or those matching predicate(key, value)."""
+        if predicate is not None:
+            return len(await self.query(predicate, timestamp))
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        async with self._lock:
+            return sum(1 for key in self._store if self._lookup_unlocked(key, ts)[0])
+
+    # -- history ------------------------------------------------------------
+
+    async def history(self, key: Any) -> List[Tuple[float, Any]]:
+        """Full (timestamp, value) history for a key."""
+        self._validate_key(key)
+        async with self._lock:
+            if self._is_expired(key):
+                return []
+            return list(self._store.get(key, []))
+
+    async def iter_history(self, key: Any) -> "AsyncIterator[Tuple[float, Any]]":
+        """Yield a key's versions without exposing the live list."""
+        for version in await self.history(key):
+            yield version
+
+    async def get_range(
+        self,
+        key: Any,
+        start_ts: Optional[Union[float, str, datetime]] = None,
+        end_ts: Optional[Union[float, str, datetime]] = None,
+    ) -> List[Tuple[float, Any]]:
+        """All (timestamp, value) pairs for a key within [start_ts, end_ts]."""
+        self._validate_key(key)
+        async with self._lock:
+            if self._is_expired(key):
+                return []
+            versions = self._store.get(key, [])
+            if not versions:
+                return []
+            start = self._parse_timestamp(start_ts) if start_ts is not None else float("-inf")
+            end = self._parse_timestamp(end_ts) if end_ts is not None else self._current_time()
+            if start_ts is not None:
+                self._validate_timestamp(start)
+            if end_ts is not None:
+                self._validate_timestamp(end)
+            if start > end:
+                return []
+            return [(ts, value) for ts, value in versions if start <= ts <= end]
+
+    async def get_latest_keys(self, n: int) -> List[Tuple[Any, float, Any]]:
+        """The n most recently written (key, timestamp, value) triples."""
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ChronoMapValueError("n must be a non-negative integer")
+        if n == 0:
+            return []
+        async with self._lock:
+            latest_items = []
+            for key, versions in self._store.items():
+                if self._is_expired(key):
+                    continue
+                if versions:
+                    ts, value = versions[-1]
+                    latest_items.append((key, ts, value))
+        latest_items.sort(key=lambda item: item[1], reverse=True)
+        return latest_items[:n]
+
+    async def get_keys_by_value(
+        self, value: Any, timestamp: Optional[Union[float, str, datetime]] = None
+    ) -> List[Any]:
+        """All keys whose value at `timestamp` equals `value`."""
+        ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
+        self._validate_timestamp(ts)
+        async with self._lock:
+            keys = []
+            for key in self._store:
+                found, current = self._lookup_unlocked(key, ts)
+                if found and current == value:
+                    keys.append(key)
+            return keys
+
+    async def keys(self) -> List[Any]:
+        """Live keys, in insertion order."""
+        async with self._lock:
+            return [key for key in self._store if not self._is_expired(key)]
+
+    async def values(self) -> List[Any]:
+        """Latest values for every live key."""
+        async with self._lock:
+            return [
+                versions[-1][1]
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            ]
+
+    async def items(self) -> List[Tuple[Any, Any]]:
+        """(key, latest value) pairs for every live key."""
+        async with self._lock:
+            return [
+                (key, versions[-1][1])
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            ]
 
     async def latest(self) -> Dict[Any, Any]:
+        """{key: latest_value} for every non-expired key."""
         async with self._lock:
-            return {k: v[-1][1] for k, v in self._store.items() if v and not self._is_expired(k)}
+            return {
+                key: versions[-1][1]
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            }
 
     async def keys_with_history_count(self) -> Dict[Any, int]:
+        """{key: number_of_versions_stored} for every non-expired key."""
         async with self._lock:
-            return {k: len(v) for k, v in self._store.items() if v and not self._is_expired(k)}
+            return {
+                key: len(versions)
+                for key, versions in self._store.items()
+                if versions and not self._is_expired(key)
+            }
 
-    def get_stats(self) -> Dict[str, int]:
-        return self._stats.copy()
+    async def size(self) -> int:
+        """Number of live keys."""
+        async with self._lock:
+            return sum(1 for key in self._store if not self._is_expired(key))
+
+    async def contains(self, key: Any) -> bool:
+        """Async spelling of `key in cm`."""
+        self._validate_key(key)
+        async with self._lock:
+            return self._lookup_unlocked(key, self._current_time())[0]
+
+    # -- pruning ------------------------------------------------------------
+
+    async def prune_history(
+        self,
+        key: Any,
+        keep_last: Optional[int] = None,
+        older_than: Optional[Union[float, str, datetime]] = None,
+    ) -> int:
+        """Remove old versions for one key. Returns the number removed."""
+        self._validate_key(key)
+        self._validate_keep_last(keep_last)
+        async with self._lock:
+            if key not in self._store:
+                return 0
+
+            versions = self._store[key]
+            original_count = len(versions)
+            if keep_last is not None:
+                if keep_last == 0:
+                    versions.clear()
+                else:
+                    versions[:] = versions[-keep_last:]
+
+            if older_than is not None:
+                cutoff = self._parse_timestamp(older_than)
+                self._validate_timestamp(cutoff)
+                versions[:] = [(ts, value) for ts, value in versions if ts >= cutoff]
+
+            if not versions:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+
+            removed = original_count - len(versions)
+            if self._cache and removed:
+                self._cache.invalidate(key)
+            return removed
+
+    async def prune_all_history(
+        self,
+        keep_last: Optional[int] = None,
+        older_than: Optional[Union[float, str, datetime]] = None,
+    ) -> int:
+        """Prune every live key."""
+        total_removed = 0
+        for key in await self.keys():
+            total_removed += await self.prune_history(key, keep_last, older_than)
+        return total_removed
+
+    async def clean_expired_keys(self) -> int:
+        """Sweep expired keys. Returns the number removed."""
+        async with self._lock:
+            expired_keys = [key for key in self._ttl if self._is_expired(key)]
+            for key in expired_keys:
+                self._store.pop(key, None)
+                del self._ttl[key]
+                if self._cache:
+                    self._cache.invalidate(key)
+        self.cleaned_count += len(expired_keys)
+        return len(expired_keys)
+
+    # -- snapshots and merging ---------------------------------------------
+
+    async def snapshot(self) -> "AsyncChronoMap":
+        """Deep-copy snapshot of the current state."""
+        async with self._lock:
+            snap = AsyncChronoMap(
+                debug=self._debug,
+                max_history=self._max_history,
+                cache_size=0,
+                enable_ttl_cleanup=False,
+            )
+            snap._store = deepcopy(self._store)
+            snap._ttl = deepcopy(self._ttl)
+            snap._snapshot_time = self._current_time()
+            self._stats["snapshots"] += 1
+            return snap
+
+    def snapshot_context(self) -> AsyncSnapshotContext:
+        """`async with cm.snapshot_context(): ...` rolls back on exception."""
+        return AsyncSnapshotContext(self)
+
+    async def rollback(self, snapshot: "AsyncChronoMap") -> None:
+        """Restore state from a previous snapshot()."""
+        if not isinstance(snapshot, AsyncChronoMap):
+            raise ChronoMapTypeError("Expected AsyncChronoMap instance for rollback.")
+        async with self._lock:
+            self._store = deepcopy(snapshot._store)
+            self._ttl = deepcopy(snapshot._ttl)
+            if self._cache:
+                self._cache.clear()
+
+    async def _visibility_snapshot(self) -> Tuple[Dict[Any, Any], Set[Any]]:
+        live: Dict[Any, Any] = {}
+        expired: Set[Any] = set()
+        async with self._lock:
+            for key, versions in self._store.items():
+                if self._is_expired(key):
+                    expired.add(key)
+                elif versions:
+                    live[key] = versions[-1][1]
+        return live, expired
+
+    async def diff(self, other: "AsyncChronoMap") -> Set[Any]:
+        """Keys whose current value differs between self and other."""
+        if not isinstance(other, AsyncChronoMap):
+            raise ChronoMapTypeError("Expected AsyncChronoMap instance for diff.")
+        self_state, _ = await self._visibility_snapshot()
+        other_state, _ = await other._visibility_snapshot()
+        return {
+            key
+            for key in set(self_state) | set(other_state)
+            if self_state.get(key, _MISSING) != other_state.get(key, _MISSING)
+        }
+
+    async def diff_detailed(self, other: "AsyncChronoMap") -> List[Tuple[Any, Any, Any]]:
+        """(key, other's value, self's value) for every key that differs."""
+        if not isinstance(other, AsyncChronoMap):
+            raise ChronoMapTypeError("Expected AsyncChronoMap instance for diff_detailed.")
+        self_state, self_expired = await self._visibility_snapshot()
+        other_state, other_expired = await other._visibility_snapshot()
+        changes = []
+        for key in set(self_state) | set(other_state) | self_expired | other_expired:
+            if key in self_expired or key in other_expired:
+                continue
+            old_val = other_state.get(key, _MISSING)
+            new_val = self_state.get(key, _MISSING)
+            if old_val != new_val:
+                changes.append(
+                    (
+                        key,
+                        None if old_val is _MISSING else old_val,
+                        None if new_val is _MISSING else new_val,
+                    )
+                )
+        return changes
+
+    async def merge(self, other: "AsyncChronoMap", strategy: str = "timestamp") -> None:
+        """Merge another map's history using either timestamp order or overwrite."""
+        if not isinstance(other, AsyncChronoMap):
+            raise ChronoMapTypeError("Expected AsyncChronoMap instance for merge.")
+        if strategy not in ("timestamp", "overwrite"):
+            raise ChronoMapValueError(f"Invalid merge strategy: {strategy}")
+
+        async with other._lock:
+            other_store = deepcopy(other._store)
+            other_ttl = deepcopy(other._ttl)
+
+        async with self._lock:
+            if strategy == "timestamp":
+                for key, other_versions in other_store.items():
+                    target_versions = self._store.get(key, [])
+                    if other_versions:
+                        self._store[key] = list(
+                            heapq.merge(target_versions, other_versions, key=lambda item: item[0])
+                        )
+                    self._auto_prune(key)
+                    self._stats["writes"] += len(other_versions)
+                for key, expiry in other_ttl.items():
+                    if key not in self._ttl or expiry > self._ttl[key]:
+                        self._ttl[key] = expiry
+            else:
+                for key, versions in other_store.items():
+                    self._store[key] = versions
+                    self._auto_prune(key)
+                    self._stats["writes"] += len(versions)
+                for key, expiry in other_ttl.items():
+                    self._ttl[key] = expiry
+
+            if self._cache:
+                self._cache.clear()
+
+    async def clear(self) -> None:
+        """Remove everything."""
+        async with self._lock:
+            self._store.clear()
+            self._ttl.clear()
+            if self._cache:
+                self._cache.clear()
+
+    # -- stats --------------------------------------------------------------
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Operation counters, cache stats, and size information."""
+        stats: Dict[str, Any] = self._stats.copy()
+        if self._cache:
+            cache_stats = self._cache.get_stats()
+            stats.update(
+                {
+                    "cache_hits": cache_stats["hits"],
+                    "cache_misses": cache_stats["misses"],
+                    "cache_size": cache_stats["size"],
+                    "cache_hit_rate": cache_stats["hit_rate"],
+                }
+            )
+        stats["ttl_cleanup_count"] = self.cleaned_count
+        stats["total_keys"] = sum(1 for key in self._store if not self._is_expired(key))
+        stats["total_versions"] = sum(len(versions) for versions in self._store.values())
+        stats["expired_keys"] = sum(1 for key in self._ttl if self._is_expired(key))
+        return stats
+
+    def reset_stats(self) -> None:
+        """Zero operation counters and the read cache."""
+        for key in self._stats:
+            self._stats[key] = 0
+        if self._cache:
+            self._cache.clear()
+        self.cleaned_count = 0
+
+    @property
+    def snapshot_time(self) -> Optional[float]:
+        """Timestamp recorded when this map was created by snapshot()."""
+        return self._snapshot_time
+
+    async def to_dataframe(self):
+        """Export live history to a pandas DataFrame without blocking the loop."""
+        rows = []
+        async with self._lock:
+            for key, versions in self._store.items():
+                if self._is_expired(key):
+                    continue
+                for version_idx, (ts, value) in enumerate(versions):
+                    rows.append(
+                        {
+                            "key": key,
+                            "value": value,
+                            "timestamp": ts,
+                            "datetime": datetime.fromtimestamp(ts),
+                            "version": version_idx,
+                        }
+                    )
+
+        def build():
+            try:
+                import pandas as pd
+            except ImportError as exc:
+                raise ImportError(
+                    "pandas is required for to_dataframe(). " "Install with: pip install chronomap[pandas]"
+                ) from exc
+            return pd.DataFrame(rows)
+
+        return await self._run_blocking(build)
+
+    # -- persistence --------------------------------------------------------
+
+    def to_dict(self, compress: Union[bool, str] = False) -> Union[Dict[str, Any], bytes]:
+        """Serialize to a plain dict, or to compressed bytes."""
+        data = {
+            "store": deepcopy(self._store),
+            "ttl": deepcopy(self._ttl),
+            "snapshot_time": self._snapshot_time,
+            "version": __version__,
+            "max_history": self._max_history,
+        }
+        if not compress:
+            return data
+
+        pickled = pickle.dumps(data)
+        method = "zlib" if compress is True else compress
+        compressors: Dict[str, Callable[[bytes], bytes]] = {
+            "zlib": lambda raw: zlib.compress(raw, level=6),
+            "gzip": lambda raw: gzip.compress(raw, compresslevel=6),
+            "bz2": lambda raw: bz2.compress(raw, compresslevel=6),
+            "lzma": lambda raw: lzma.compress(raw, preset=6),
+        }
+        if method not in compressors:
+            raise ChronoMapValueError(f"Unknown compression method: {compress}")
+        return method.encode() + b"|" + compressors[method](pickled)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Union[Dict[str, Any], bytes],
+        debug: bool = False,
+        cache_size: int = 1000,
+        **kwargs,
+    ) -> "AsyncChronoMap":
+        """Reconstruct a map from to_dict() output (dict or compressed bytes)."""
+        payload: Any = data
+        if isinstance(data, bytes):
+            decompressors: Dict[bytes, Callable[[bytes], bytes]] = {
+                b"zlib": zlib.decompress,
+                b"gzip": gzip.decompress,
+                b"bz2": bz2.decompress,
+                b"lzma": lzma.decompress,
+            }
+            if b"|" in data[:20]:
+                method_bytes, compressed = data.split(b"|", 1)
+                decompress = decompressors.get(method_bytes)
+                if decompress is None:
+                    raise ChronoMapValueError(f"Unknown compression marker: {method_bytes!r}")
+                decompressed = decompress(compressed)
+            else:
+                decompressed = zlib.decompress(data)
+            payload = pickle.loads(decompressed)
+
+        if not isinstance(payload, dict):
+            raise ChronoMapTypeError("Serialized data must be a mapping")
+        raw_store = payload.get("store", {})
+        raw_ttl = payload.get("ttl", {})
+        if not isinstance(raw_store, dict) or not isinstance(raw_ttl, dict):
+            raise ChronoMapTypeError("Serialized store and ttl must be mappings")
+
+        normalized_store: Dict[Any, List[Tuple[float, Any]]] = {}
+        for key, versions in raw_store.items():
+            if not isinstance(versions, (list, tuple)):
+                raise ChronoMapValueError(f"History for key {key!r} must be a sequence")
+            normalized = []
+            for version in versions:
+                if not isinstance(version, (list, tuple)) or len(version) != 2:
+                    raise ChronoMapValueError(f"Malformed version for key {key!r}: {version!r}")
+                normalized.append((version[0], version[1]))
+            normalized_store[key] = normalized
+
+        instance = cls(
+            debug=debug,
+            max_history=payload.get("max_history"),
+            cache_size=cache_size,
+            enable_ttl_cleanup=False,
+            **kwargs,
+        )
+        instance._store = normalized_store
+        instance._ttl = dict(raw_ttl)
+        instance._snapshot_time = payload.get("snapshot_time")
+        return instance
+
+    async def save_json(self, file_path: Union[str, Path]) -> None:
+        """Write the current state as JSON without blocking the event loop."""
+        path = Path(file_path)
+        raw_data = self.to_dict()
+        if not isinstance(raw_data, dict):
+            raise ChronoMapTypeError("Uncompressed serialization must produce a mapping")
+        json_data = {
+            "store": {str(key): versions for key, versions in raw_data["store"].items()},
+            "ttl": {str(key): expiry for key, expiry in raw_data["ttl"].items()},
+            "snapshot_time": raw_data["snapshot_time"],
+            "version": raw_data.get("version"),
+            "max_history": raw_data.get("max_history"),
+        }
+        text = json.dumps(json_data, indent=2)
+        await self._run_blocking(path.write_text, text, encoding="utf-8")
+
+    @classmethod
+    async def load_json(
+        cls, file_path: Union[str, Path], debug: bool = False, cache_size: int = 1000, **kwargs
+    ) -> "AsyncChronoMap":
+        """Read a JSON save file in a worker thread."""
+        path = Path(file_path)
+        text = await cls._run_blocking(path.read_text, encoding="utf-8")
+        json_data = json.loads(text)
+        data = {
+            "store": json_data["store"],
+            "ttl": json_data.get("ttl", {}),
+            "snapshot_time": json_data.get("snapshot_time"),
+            "max_history": json_data.get("max_history"),
+        }
+        return cls.from_dict(data, debug=debug, cache_size=cache_size, **kwargs)
+
+    async def save_pickle(self, file_path: Union[str, Path], compress: Union[bool, str] = False) -> None:
+        """Write a pickle (optionally compressed) in a worker thread."""
+        path = Path(file_path)
+        data = self.to_dict(compress=compress)
+        if isinstance(data, bytes):
+            await self._run_blocking(path.write_bytes, data)
+        else:
+            await self._run_blocking(path.write_bytes, pickle.dumps(data))
+
+    @classmethod
+    async def load_pickle(
+        cls, file_path: Union[str, Path], debug: bool = False, cache_size: int = 1000, **kwargs
+    ) -> "AsyncChronoMap":
+        """Read a pickle (or compressed pickle) in a worker thread."""
+        path = Path(file_path)
+        data_bytes = await cls._run_blocking(path.read_bytes)
+        try:
+            data: Any = pickle.loads(data_bytes)
+        except (pickle.UnpicklingError, EOFError):
+            data = data_bytes
+        return cls.from_dict(data, debug=debug, cache_size=cache_size, **kwargs)
+
+    @staticmethod
+    async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Run file I/O off the event loop, including on Python 3.8."""
+        loop = asyncio.get_running_loop()
+        if kwargs:
+            return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+        return await loop.run_in_executor(None, func, *args)
 
 
-__all__ = ["AsyncChronoMap"]
+__all__ = ["AsyncChronoMap", "AsyncSnapshotContext"]
