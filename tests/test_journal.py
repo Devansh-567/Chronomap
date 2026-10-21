@@ -233,3 +233,12 @@ def test_fsync_directory_tolerates_unsupported_platforms(monkeypatch, tmp_path):
     monkeypatch.setattr(journal_module.os, "fsync", lambda descriptor: None)
     monkeypatch.setattr(journal_module.os, "close", lambda descriptor: None)
     _fsync_directory(tmp_path)
+
+
+@pytest.mark.persistence
+def test_fsync_directory_ignores_open_errors(monkeypatch, tmp_path):
+    def fail(*args):
+        raise OSError("directories cannot be opened")
+
+    monkeypatch.setattr(journal_module.os, "open", fail)
+    _fsync_directory(tmp_path)

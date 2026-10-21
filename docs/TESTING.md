@@ -112,7 +112,7 @@ and makes ordering irrelevant.
 | `snapshot` | Snapshot, rollback, and diff | 23 |
 | `async_map` | `AsyncChronoMap` behavior | 113 |
 | `cli` | CLI behavior | 80 |
-| `persistence` | Archive, codec, and WAL behavior | 126 |
+| `persistence` | Archive, codec, and WAL behavior | 127 |
 | `query` | Fluent value and version queries | 69 |
 
 These are selection sizes, not a partition: markers drive the CI subsystem
