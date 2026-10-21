@@ -112,10 +112,10 @@ def test_journal_truncates_a_failed_append(tmp_path):
     finally:
         journal._file = original
     assert journal.sequence == 0
+    journal.close()
     reopened = Journal(path)
     assert reopened.records == ()
     reopened.close()
-    journal.close()
 
 
 @pytest.mark.persistence

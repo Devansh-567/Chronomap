@@ -43,6 +43,34 @@ class JournalCorruptionError(JournalError):
     """The journal or checkpoint is malformed or fails its checksum."""
 
 
+class JournalLockError(JournalError):
+    """Another live process already owns the journal lock."""
+
+
+def _acquire_os_lock(descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    else:  # pragma: no cover - exercised on POSIX CI
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+
+
+def _release_os_lock(descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:  # pragma: no cover - exercised on POSIX CI
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+
+
 def _fsync_directory(path: Path) -> None:
     try:
         descriptor = os.open(str(path), os.O_RDONLY)
@@ -116,7 +144,19 @@ class Journal:
         self._sequence = 0
         self._records: List[Tuple[int, str, Dict[str, Any]]] = []
         self._file: Optional[IO[bytes]] = None
-        self._open()
+        self._lock_fd: Optional[int] = None
+        self._acquire_path_lock()
+        try:
+            self._open()
+        except BaseException:
+            self._release_path_lock()
+            raise
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:  # pragma: no cover - interpreter shutdown
+            pass
 
     @property
     def sequence(self) -> int:
@@ -137,6 +177,29 @@ class Journal:
             return self.path.stat().st_size
         except OSError:
             return 0
+
+    def _acquire_path_lock(self) -> None:
+        lock_path = self.path.with_name(self.path.name + ".lock")
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        try:
+            descriptor = os.open(str(lock_path), flags, 0o600)
+        except OSError as exc:
+            raise JournalError(f"Could not open journal lock file {lock_path}: {exc}") from exc
+        try:
+            _acquire_os_lock(descriptor)
+        except OSError as exc:
+            os.close(descriptor)
+            raise JournalLockError(f"Journal {self.path} is locked by another process") from exc
+        self._lock_fd = descriptor
+
+    def _release_path_lock(self) -> None:
+        descriptor = self._lock_fd
+        self._lock_fd = None
+        if descriptor is not None:
+            try:
+                _release_os_lock(descriptor)
+            finally:
+                os.close(descriptor)
 
     def _open(self) -> None:
         created = not self.path.exists() or self.path.stat().st_size == 0
@@ -277,9 +340,12 @@ class Journal:
             if self._closed:
                 return
             self._closed = True
-            if self._file is not None:
-                self._file.close()
-                self._file = None
+            try:
+                if self._file is not None:
+                    self._file.close()
+                    self._file = None
+            finally:
+                self._release_path_lock()
 
     def __enter__(self) -> "Journal":
         return self
@@ -294,6 +360,7 @@ __all__ = [
     "Journal",
     "JournalCorruptionError",
     "JournalError",
+    "JournalLockError",
     "read_checkpoint",
     "write_checkpoint",
 ]
