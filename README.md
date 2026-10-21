@@ -76,7 +76,8 @@ assert recovered.get("retries") == 3
 
 Records are flushed and fsynced before the in-memory mutation by default
 (`wal_sync=True`). Journals compact into an atomic checkpoint automatically
-at 64 MiB, or whenever you call `cm.checkpoint()`.
+at 64 MiB, or whenever you call `cm.checkpoint()`. `AsyncChronoMap` accepts the
+same options; use `async with` or `await cm.aclose()` to close its journal.
 
 ## Documentation
 
@@ -109,7 +110,7 @@ at 64 MiB, or whenever you call `cm.checkpoint()`.
   and combine histories with `merge(strategy=...)`.
 - **Durability** - opt into an append-only, CRC-checked write-ahead journal
   with crash recovery, CRC-checked atomic checkpoints, and configurable fsync.
-  The sync map supports WAL mode; `AsyncChronoMap` does not yet.
+  Both `ChronoMap` and `AsyncChronoMap` support WAL mode.
 - **Persistence** - checkpoint with `save_json()`, `save_pickle()`,
   `to_dict()`, and the matching loaders.
 - **Version export** - stream every live version with `iter_rows()`, or build
@@ -124,8 +125,8 @@ at 64 MiB, or whenever you call `cm.checkpoint()`.
 `ChronoMap` is safe to share between threads in one process. It uses a
 reader-writer lock by default, with an `RLock` fallback if you set
 `use_rwlock=False`. It is not process-safe and does not coordinate across
-multiple processes. A WAL file must be owned by one live `ChronoMap` at a
-time; it has no cross-process file lock.
+multiple processes. A WAL file must be owned by one live map at a time; it
+has no cross-process file lock.
 
 `AsyncChronoMap` uses an `asyncio.Lock` and should stay on one event loop.
 Do not share a synchronous map and an async map as if they were the same
