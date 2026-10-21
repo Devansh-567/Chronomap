@@ -122,6 +122,38 @@ assert ("all", "disk", None, 0.2) in audit
 Callback exceptions are logged and do not roll back the write. Keep callbacks
 short; they run in the writer's execution path in the synchronous map.
 
+## Recover writes after a crash
+
+Use `wal_path` when losing the latest writes is not acceptable. Each record is
+fsynced before the in-memory mutation by default.
+
+```python
+import tempfile
+from pathlib import Path
+
+from chronomap import ChronoMap
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "state.wal"
+
+    with ChronoMap(wal_path=path, enable_ttl_cleanup=False) as state:
+        state.put("region", "us-east")
+        state.put("retries", 3)
+
+    recovered = ChronoMap(wal_path=path, enable_ttl_cleanup=False)
+    try:
+        assert recovered.get("region") == "us-east"
+        assert recovered.get("retries") == 3
+    finally:
+        recovered.close()
+```
+
+The journal automatically compacts into an atomic checkpoint at 64 MiB. Tune
+that with `wal_auto_checkpoint_bytes`, disable it with `None`, or call
+`checkpoint()` explicitly. Use one live map per WAL path: there is no
+cross-process file lock, and journals/checkpoints use trusted pickle data.
+`AsyncChronoMap` does not support WAL mode yet.
+
 ## Save and restore a map
 
 For string keys and JSON-compatible values, JSON is the portable choice.

@@ -33,6 +33,7 @@ from .persistence import (
     load,
     loads,
 )
+from ._journal import Journal, JournalCorruptionError, JournalError
 from ._snapshot import SnapshotContext
 from ._version import __version__
 from .query import Query, QueryError, VersionQuery, query, versions
@@ -59,6 +60,9 @@ __all__ = [
     "versions",
     "SnapshotContext",
     "AsyncSnapshotContext",
+    "Journal",
+    "JournalError",
+    "JournalCorruptionError",
     "RWLock",
     "LRUCache",
     "ArchiveInfo",

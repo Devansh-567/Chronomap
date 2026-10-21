@@ -6,6 +6,24 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Durable write-ahead journal for `ChronoMap`.** `ChronoMap(wal_path=...)`
+  replays an append-only WAL on startup, with `wal_sync=True` fsyncing each
+  record before the in-memory mutation and `wal_auto_checkpoint_bytes`
+  compacting into an atomic checkpoint (default 64 MiB). New `checkpoint()`,
+  `close()`, and context-manager support; recovery discards a torn tail and
+  rejects complete records that fail CRC or sequence validation.
+  `AsyncChronoMap` does not support WAL mode yet.
+- `Journal`, `JournalError`, and `JournalCorruptionError` exports for callers
+  that need the CRC-framed record layer directly.
+- WAL records cover puts, batch writes, deletes, TTL changes, pruning,
+  merges, rollbacks, clears, and expired-key sweeps, and `from_dict(...,
+  wal_path=...)` logs imported state as a replacement record.
+- `get_stats()` reports `journal_path`, `journal_bytes`, and
+  `journal_sequence` for WAL-backed maps.
+- `tests/test_journal.py`, `tests/test_wal.py`, and
+  `tests/test_module_entry.py` cover framing, checksums, torn writes,
+  checkpoints, replay of every mutation, TTL expiry edge cases, WAL
+  validation, close/destructor behavior, and the `__main__` entrypoint.
 - Pytest markers (`core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
   `async_map`, `cli`) applied across the whole test suite, so each
   subsystem's tests can be run and reported on independently
