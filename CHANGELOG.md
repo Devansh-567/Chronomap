@@ -21,14 +21,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `await aclose()`, and `async with` lifecycle support. Async `from_dict()`
   now validates version timestamps, sorted histories, TTL deadlines, and
   `snapshot_time` like the synchronous implementation.
+- **Cross-process WAL ownership.** A `Journal` now holds an exclusive,
+  OS-backed advisory lock on `<wal_path>.lock` for its lifetime, so a second
+  live map on the same path raises `JournalLockError` instead of interleaving
+  writes. The operating system releases the lock on close or process exit,
+  including abrupt exits. The sidecar file remains on disk; it carries no
+  state beyond the lock.
 - `tests/test_async_wal.py` and `tests/test_async_serialization_validation.py`
   cover replay of every async mutation, TTL purge recovery, checkpoints,
   auto-checkpoint failures, torn tails, corrupt journals/checkpoints,
   `from_dict()` replacement/failure paths, closed-journal behavior, stats,
   destructor safety, and abrupt subprocess exits with and without a
   checkpoint.
-- `Journal`, `JournalError`, and `JournalCorruptionError` exports for callers
-  that need the CRC-framed record layer directly.
+- `Journal`, `JournalError`, `JournalCorruptionError`, and
+  `JournalLockError` exports for callers that need the CRC-framed record
+  layer directly.
 - Checkpoint files are length- and CRC32-framed; truncated, extended, or
   checksum-corrupted checkpoints raise `JournalCorruptionError`. Journal
   resets use a temporary header and atomic rename, and failed automatic
@@ -41,13 +48,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   cannot resurrect a stale deadline.
 - `get_stats()` reports `journal_path`, `journal_bytes`, and
   `journal_sequence` for WAL-backed maps.
-- `tests/test_journal.py`, `tests/test_wal.py`, `tests/test_wal_crash.py`, and
-  `tests/test_module_entry.py` cover framing, checksums, torn writes,
-  checkpoints, replay of every mutation, TTL expiry edge cases, WAL
-  validation, abrupt process exits with and without a checkpoint,
-  close/destructor behavior, and the `__main__` entrypoint. Async WAL and
+- `tests/test_journal.py`, `tests/test_wal.py`, `tests/test_wal_crash.py`,
+  `tests/test_wal_lock.py`, and `tests/test_module_entry.py` cover framing,
+  checksums, torn writes, checkpoints, replay of every mutation, TTL expiry
+  edge cases, WAL validation, cross-process lock contention and release,
+  abrupt process exits with and without a checkpoint, close/destructor
+  behavior, and the `__main__` entrypoint. Async WAL and
   serialization-validation coverage lives in `tests/test_async_wal.py` and
-  `tests/test_async_serialization_validation.py`.
+  `tests/test_async_serialization_validation.py`; compressed pickle fallback
+  coverage lives in `tests/test_pickle_fallback.py`.
 - Pytest markers (`core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
   `async_map`, `cli`) applied across the whole test suite, so each
   subsystem's tests can be run and reported on independently
@@ -127,6 +136,11 @@ read, 3.1 ms to 5.3 us per write with a 50k-entry cache, and 669 ms to
 2.5 ms for `distinct()` over 5k unique values.
 
 ### Fixed
+- **Compressed pickle loading could raise `UnicodeDecodeError`.** When a
+  compressed payload happened to look like the start of a pickle, `load_pickle()`
+  only caught `UnpicklingError` and `EOFError`; some gzip streams failed with a
+  decoding error instead of falling back to decompression. Both map
+  implementations now treat any failed raw pickle parse as compressed input.
 - **Rejected TTLs used to leave a version behind.** `put()` appended the
   value before checking `ttl`, so `put("k", "v", ttl=0)` raised
   `ChronoMapValueError` *and* stored the value. TTL validation now runs

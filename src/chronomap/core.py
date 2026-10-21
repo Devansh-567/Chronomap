@@ -1807,7 +1807,7 @@ class ChronoMap:
             data_bytes = f.read()
         try:
             data = pickle.loads(data_bytes)
-        except (pickle.UnpicklingError, EOFError):
+        except Exception:
             data = data_bytes  # compressed; let from_dict figure out the method
         logger.debug("LOAD_PICKLE from %s", file_path)
         return cls.from_dict(data, debug=debug, use_rwlock=use_rwlock, **kwargs)

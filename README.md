@@ -124,9 +124,10 @@ same options; use `async with` or `await cm.aclose()` to close its journal.
 
 `ChronoMap` is safe to share between threads in one process. It uses a
 reader-writer lock by default, with an `RLock` fallback if you set
-`use_rwlock=False`. It is not process-safe and does not coordinate across
-multiple processes. A WAL file must be owned by one live map at a time; it
-has no cross-process file lock.
+`use_rwlock=False`. It does not share state across processes. A WAL-backed map
+takes an OS-backed advisory lock on `<wal_path>.lock`, so opening the same
+journal from a second live process raises `JournalLockError`; the lock is
+released when the owner exits, including after a crash.
 
 `AsyncChronoMap` uses an `asyncio.Lock` and should stay on one event loop.
 Do not share a synchronous map and an async map as if they were the same
@@ -136,11 +137,13 @@ object.
 
 - Not a database. The optional WAL survives process crashes and torn tail
   writes for one writer, but the map is still in-memory, has no transactions
-  or replication, and does not coordinate multiple processes. Snapshot
+  or replication, and does not share state across processes. The WAL lock only
+  prevents a second live writer; it is not distributed coordination. Snapshot
   helpers (`save_json()`, `save_pickle()`) are separate from the journal.
   JSON saves coerce keys to strings; use pickle when key types matter.
 - Not process-safe. Thread-safe within one process; for multiprocessing,
-  use separate instances and your own IPC.
+  use separate instances and your own IPC. A WAL path accepts only one live
+  owner and rejects a second one with `JournalLockError`.
 - Not built for large-scale analytics. `query()`, `aggregate()`, and
   `count()` are O(n) scans. They are intended for hundreds to low
   thousands of keys, not warehouse-sized datasets.

@@ -488,9 +488,13 @@ async with AsyncChronoMap(wal_path="chronomap.wal") as cm:
     await cm.put("region", "us-east")
 ```
 
-The WAL is designed for one live map per file; it does not take a cross-process
-lock. `from_dict(..., wal_path=...)` logs the imported state as a replacement
-record so the imported map survives a later recovery for both implementations.
+A journal holds an exclusive advisory lock on `<wal_path>.lock` for its
+lifetime. Opening a second live map on the same path raises `JournalLockError`
+rather than allowing interleaved appends. The lock is released when the map is
+closed, the owning process exits, or the process crashes; the sidecar file is
+left in place and can be reused. `from_dict(..., wal_path=...)` logs the
+imported state as a replacement record so the imported map survives a later
+recovery for both implementations.
 
 ### Persistence
 
@@ -863,9 +867,11 @@ sequence ordering and CRC checksums, truncates a torn final record on reopen,
 and exposes `sequence`, `records`, `size`, and `closed` (plus `reset()`,
 `advance_to()`, and `clear_records()` for checkpoint/recovery coordination).
 `reset()` atomically replaces the journal with a fresh header while retaining
-the sequence counter. Most applications should pass `wal_path` to `ChronoMap`
-instead of using `Journal` directly. Checkpoint helpers (`write_checkpoint()`
-/ `read_checkpoint()`) are internal modules.
+the sequence counter. Each live `Journal` holds an OS-backed advisory lock on
+`<path>.lock`; a second journal on the same path raises `JournalLockError`.
+Most applications should pass `wal_path` to `ChronoMap` instead of using
+`Journal` directly. Checkpoint helpers (`write_checkpoint()` /
+`read_checkpoint()`) are internal modules.
 
 ### `__version__`
 
@@ -890,6 +896,7 @@ All package exceptions derive from `ChronoMapError`, which derives from
 | `CodecError` | A value cannot be represented by the selected archive codec. |
 | `JournalError` | Base class for WAL open, append, checkpoint, or close failures. |
 | `JournalCorruptionError` | A WAL or checkpoint is malformed, out of order, or fails its checksum. |
+| `JournalLockError` | Another live process already owns the WAL path. |
 
 ```python
 from chronomap import ChronoMapKeyError
@@ -920,7 +927,8 @@ The CLI accepts both JSON and pickle files written by `save_json()` and
 - `diff` and `merge` walk both maps.
 - WAL appends are O(record size) plus an fsync by default; checkpoints are
   O(total state) and are amortized by the journal size threshold.
-- The structure is thread-safe within one process, not process-safe. Use one
-  live `ChronoMap` per WAL path.
+- The structure is thread-safe within one process and does not share state
+  across processes. A WAL path is owned by one live map at a time; a second
+  opener raises `JournalLockError`.
 - The memory ceiling is an approximation intended as a tripwire, not a hard
   allocator guarantee.

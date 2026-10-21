@@ -23,9 +23,11 @@ It deliberately does not provide:
 
 Persistence is whole-map snapshot serialization, not a database. Both map
 implementations can opt into a single-writer write-ahead log for crash
-recovery, but ChronoMap is still in-memory and does not coordinate multiple
-processes. If you need a durable multi-process store, use a database and keep
-ChronoMap as a time-indexed cache or projection.
+recovery, but ChronoMap is still in-memory and does not share state across
+processes. A WAL file rejects a second live writer with `JournalLockError`;
+that is ownership protection, not multi-process coordination. If you need a
+durable multi-process store, use a database and keep ChronoMap as a
+time-indexed cache or projection.
 
 ## Module map
 
@@ -203,8 +205,11 @@ not a drop-in replacement for `ChronoMap` in a threaded program.
 ### Process model
 
 Thread safety does not extend across processes. Two processes that load the
-same file get two independent maps. Writes to one are invisible to the other
-until the file is saved and loaded again.
+same archive get two independent maps. Writes to one are invisible to the
+other until the state is saved and loaded again. WAL-backed maps are the
+exception to accidental sharing: the journal holds an exclusive OS-backed
+advisory lock on `<wal_path>.lock`, so a second live opener gets
+`JournalLockError` instead of appending to the same journal.
 
 ## TTL
 
@@ -341,6 +346,13 @@ truncated; a complete frame with a bad checksum or an out-of-order sequence
 raises `JournalCorruptionError`. Pickle is used for records, so the journal is
 trusted local state.
 
+Before reading or truncating a journal, `Journal` opens `<wal_path>.lock` and
+takes an exclusive non-blocking OS file lock (`flock` on POSIX,
+`msvcrt.locking` on Windows). The sidecar is separate from the journal, so an
+atomic journal reset does not drop the lock. A failed lock acquisition raises
+`JournalLockError`. The kernel releases the lock when the descriptor closes or
+the process exits, so a crash does not leave a stale lock behind.
+
 Checkpoints use the same length + CRC32 framing after `CMCHK1\n`. A truncated,
 extended, or checksum-corrupted checkpoint raises `JournalCorruptionError`
 instead of being partially applied.
@@ -371,10 +383,12 @@ checkpoint with either the old journal tail or a fresh empty journal.
 Automatic checkpoints default to every 64 MiB of journal and never turn a
 failed compaction into a failed user write.
 
-WAL-backed maps are single-writer: there is no file lock stopping two
-processes from opening the same path. Closing a synchronous map stops the TTL
-thread and the journal; `await aclose()` does the equivalent for an async map.
-The whole-map JSON/pickle persistence helpers are separate from the WAL.
+WAL-backed maps are single-writer: the sidecar lock prevents two live
+processes from opening the same path. The lock is advisory, not a distributed
+coordination primitive; do not place a WAL on a filesystem whose locking
+semantics you do not trust. Closing a synchronous map stops the TTL thread and
+the journal; `await aclose()` does the equivalent for an async map. The
+whole-map JSON/pickle persistence helpers are separate from the WAL.
 
 ## Persistence
 
@@ -451,10 +465,12 @@ and type checking alongside the tests.
   journal blocks the event loop until replay finishes.
 - WAL recovery loads all journal records into memory before applying them.
 - WAL checkpoints rewrite the whole store and TTL table.
-- One live process must own a WAL path; there is no file lock.
+- WAL ownership uses an advisory file lock; it depends on the filesystem's
+  locking support and is not distributed coordination.
 - JSON persistence coerces keys to strings.
 - Pickle persistence and WAL/checkpoint files are unsafe for untrusted input.
-- There is no cross-process coordination.
+- There is no cross-process shared-state or transaction coordination; the WAL
+  lock only rejects a second live writer.
 
 ## Extending the store
 

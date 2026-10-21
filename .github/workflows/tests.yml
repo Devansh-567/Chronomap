@@ -59,6 +59,9 @@ jobs:
               - 'tests/test_persistence.py'
               - 'tests/test_journal.py'
               - 'tests/test_wal.py'
+              - 'tests/test_wal_crash.py'
+              - 'tests/test_wal_lock.py'
+              - 'tests/test_pickle_fallback.py'
             cli:
               - 'src/chronomap/cli.py'
               - 'tests/test_cli.py'

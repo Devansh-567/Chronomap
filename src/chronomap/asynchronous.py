@@ -1621,7 +1621,7 @@ class AsyncChronoMap:
         data_bytes = await cls._run_blocking(path.read_bytes)
         try:
             data: Any = pickle.loads(data_bytes)
-        except (pickle.UnpicklingError, EOFError):
+        except Exception:
             data = data_bytes
         return cls.from_dict(data, debug=debug, cache_size=cache_size, **kwargs)
 

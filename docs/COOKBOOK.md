@@ -150,8 +150,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
 The journal automatically compacts into an atomic checkpoint at 64 MiB. Tune
 that with `wal_auto_checkpoint_bytes`, disable it with `None`, or call
-`checkpoint()` explicitly. Use one live map per WAL path: there is no
-cross-process file lock, and journals/checkpoints use trusted pickle data.
+`checkpoint()` explicitly. Each live map holds an exclusive advisory lock on
+`<wal_path>.lock`; a second process that opens the same path raises
+`JournalLockError` until the owner closes or exits. Journals and checkpoints
+use trusted pickle data.
 
 `AsyncChronoMap` takes the same WAL arguments and moves append, checkpoint, and
 close operations off the event loop:
