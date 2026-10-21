@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -127,7 +128,7 @@ def test_auto_checkpoint_failure_keeps_the_journal(tmp_path, monkeypatch):
     cm = open_map(path, wal_auto_checkpoint_bytes=1)
 
     def fail():
-        raise JournalError("checkpoint failed")
+        raise RuntimeError("checkpoint failed")
 
     monkeypatch.setattr(cm, "_checkpoint_unlocked", fail)
     cm.put("a", 1, timestamp=1)
@@ -248,6 +249,7 @@ def test_wal_merge_and_rollback_are_replayed(tmp_path):
     recovered = open_map(rollback_path)
     try:
         assert recovered.history("k") == [(1.0, 1)]
+        assert recovered.snapshot_time is None
     finally:
         recovered.close()
 
@@ -345,6 +347,7 @@ def test_from_dict_with_wal_persists_imported_state(tmp_path):
     source = ChronoMap(enable_ttl_cleanup=False)
     source.put("imported", 1, ttl=1000)
     data = source.to_dict()
+    data["snapshot_time"] = 123.0
     source.close()
 
     path = tmp_path / "state.wal"
@@ -355,6 +358,27 @@ def test_from_dict_with_wal_persists_imported_state(tmp_path):
     try:
         assert recovered.get("imported") == 1
         assert "imported" in recovered._ttl
+        assert recovered.snapshot_time == 123.0
+    finally:
+        recovered.close()
+
+
+@pytest.mark.persistence
+def test_failed_wal_import_closes_the_journal(tmp_path):
+    path = tmp_path / "state.wal"
+    data = {
+        "store": {"bad": [(1.0, lambda: None)]},
+        "ttl": {},
+        "snapshot_time": None,
+        "version": 1,
+        "max_history": None,
+    }
+    with pytest.raises(JournalError):
+        ChronoMap.from_dict(data, wal_path=path, enable_ttl_cleanup=False)
+
+    recovered = open_map(path)
+    try:
+        assert "bad" not in recovered
     finally:
         recovered.close()
 
@@ -399,12 +423,20 @@ def test_checkpoint_sequence_skips_old_journal_records(tmp_path):
 
 
 @pytest.mark.persistence
-def test_wal_replay_validates_prune_records(tmp_path):
+@pytest.mark.parametrize(
+    "prune",
+    [
+        {"key": "a", "keep_last": None, "cutoff": True},
+        {"key": "a", "keep_last": -1, "cutoff": None},
+        {"key": "a", "keep_last": True, "cutoff": None},
+    ],
+)
+def test_wal_replay_validates_prune_records(tmp_path, prune):
     path = tmp_path / "state.wal"
     journal = Journal(path)
     journal.append("prune", {"key": "missing", "keep_last": None, "cutoff": None})
     journal.append("put", {"key": "a", "value": 1, "timestamp": 1})
-    journal.append("prune", {"key": "a", "keep_last": None, "cutoff": True})
+    journal.append("prune", prune)
     journal.close()
     with pytest.raises(JournalCorruptionError):
         open_map(path)
@@ -468,3 +500,6 @@ def test_wal_stats_close_and_context_manager(tmp_path):
         assert recovered.get("a") == 1
     with pytest.raises(JournalError):
         recovered.put("b", 2)
+    with pytest.raises(JournalError):
+        recovered.checkpoint()
+    assert not Path(str(path) + ".checkpoint").exists()

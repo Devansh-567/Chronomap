@@ -92,6 +92,7 @@ pytest tests/test_basic.py::test_time_travel -vv
 | `tests/test_query.py` | Fluent value queries, version queries, filters, reducers, and time-travel semantics. |
 | `tests/test_journal.py` | WAL framing, CRC validation, torn writes, sequence ordering, checkpoints, and directory fsync helpers. |
 | `tests/test_wal.py` | `ChronoMap` WAL integration: replay of every mutation, checkpoints, TTL recovery, corruption handling, close/context management, and `from_dict()` imports. |
+| `tests/test_wal_crash.py` | Subprocess writers that call `os._exit()` immediately after a write and after a checkpoint, then verify recovery. |
 | `tests/test_module_entry.py` | Importing the `chronomap.__main__` entrypoint. |
 
 Tests use pytest fixtures such as `tmp_path` and `capsys`, not a project-wide
@@ -104,16 +105,16 @@ and makes ordering irrelevant.
 
 | Marker | Meaning | Current selection |
 | --- | --- | --- |
-| `core` | Core read/write/query/merge/history behavior | 264 |
+| `core` | Core read/write/query/merge/history behavior | 268 |
 | `cache` | `LRUCache` behavior | 10 |
 | `lock` | `RWLock` and concurrency behavior | 5 |
 | `memory` | Memory monitor and size estimation | 8 |
 | `ttl` | TTL expiry and cleanup thread | 55 |
 | `snapshot` | Snapshot, rollback, and diff | 23 |
-| `async_map` | `AsyncChronoMap` behavior | 113 |
-| `cli` | CLI behavior | 80 |
-| `persistence` | Archive, codec, and WAL behavior | 127 |
-| `query` | Fluent value and version queries | 69 |
+| `async_map` | `AsyncChronoMap` behavior | 114 |
+| `cli` | CLI behavior | 81 |
+| `persistence` | Archive, codec, and WAL behavior | 134 |
+| `query` | Fluent value and version queries | 73 |
 
 These are selection sizes, not a partition: markers drive the CI subsystem
 job, and a test can carry more than one semantic marker, so the counts can

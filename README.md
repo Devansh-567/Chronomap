@@ -108,8 +108,8 @@ at 64 MiB, or whenever you call `cm.checkpoint()`.
 - **Diff and merge** - compare two maps with `diff()` / `diff_detailed()`
   and combine histories with `merge(strategy=...)`.
 - **Durability** - opt into an append-only, CRC-checked write-ahead journal
-  with crash recovery, atomic checkpoints, and configurable fsync. The sync
-  map supports WAL mode; `AsyncChronoMap` does not yet.
+  with crash recovery, CRC-checked atomic checkpoints, and configurable fsync.
+  The sync map supports WAL mode; `AsyncChronoMap` does not yet.
 - **Persistence** - checkpoint with `save_json()`, `save_pickle()`,
   `to_dict()`, and the matching loaders.
 - **Async** - `AsyncChronoMap` is a separate asyncio-native implementation

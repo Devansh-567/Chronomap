@@ -119,6 +119,35 @@ def test_journal_truncates_a_failed_append(tmp_path):
 
 
 @pytest.mark.persistence
+def test_journal_reset_failure_keeps_the_journal_usable(tmp_path, monkeypatch):
+    path = tmp_path / "state.wal"
+    journal = Journal(path)
+    journal.append("put", {"key": "a", "value": 1})
+
+    def fail(*args):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError):
+        journal.reset()
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert journal.sequence == 1
+    assert journal.append("delete", {"key": "a"}) == 2
+
+    monkeypatch.setattr(os, "unlink", fail)
+    with pytest.raises(OSError):
+        journal.reset()
+    assert journal.sequence == 2
+    journal.close()
+
+    reopened = Journal(path)
+    try:
+        assert [record[0] for record in reopened.records] == [1, 2]
+    finally:
+        reopened.close()
+
+
+@pytest.mark.persistence
 def test_journal_recovers_a_torn_tail(tmp_path):
     path = tmp_path / "state.wal"
     journal = Journal(path)
@@ -176,6 +205,10 @@ def test_journal_rejects_corrupt_files(tmp_path):
         Journal(sequence_path)
 
 
+def make_checkpoint_payload(payload):
+    return CHECKPOINT_MAGIC + struct.pack(">II", len(payload), zlib.crc32(payload) & 0xFFFFFFFF) + payload
+
+
 @pytest.mark.persistence
 def test_checkpoint_round_trip_and_validation(tmp_path):
     path = tmp_path / "state.checkpoint"
@@ -188,13 +221,35 @@ def test_checkpoint_round_trip_and_validation(tmp_path):
     with pytest.raises(JournalCorruptionError):
         read_checkpoint(bad_header)
 
+    truncated = tmp_path / "truncated.checkpoint"
+    truncated.write_bytes(CHECKPOINT_MAGIC)
+    with pytest.raises(JournalCorruptionError):
+        read_checkpoint(truncated)
+
+    short_payload = tmp_path / "short-payload.checkpoint"
+    short_payload.write_bytes(make_checkpoint_payload(pickle.dumps(state))[:-1])
+    with pytest.raises(JournalCorruptionError):
+        read_checkpoint(short_payload)
+
+    trailing_bytes = tmp_path / "trailing-bytes.checkpoint"
+    trailing_bytes.write_bytes(make_checkpoint_payload(pickle.dumps(state)) + b"extra")
+    with pytest.raises(JournalCorruptionError):
+        read_checkpoint(trailing_bytes)
+
+    bad_checksum = tmp_path / "bad-checksum.checkpoint"
+    corrupted = bytearray(make_checkpoint_payload(pickle.dumps(state)))
+    corrupted[-1] ^= 0xFF
+    bad_checksum.write_bytes(corrupted)
+    with pytest.raises(JournalCorruptionError):
+        read_checkpoint(bad_checksum)
+
     bad_payload = tmp_path / "bad-payload.checkpoint"
-    bad_payload.write_bytes(CHECKPOINT_MAGIC + b"not-pickle")
+    bad_payload.write_bytes(make_checkpoint_payload(b"not-pickle"))
     with pytest.raises(JournalCorruptionError):
         read_checkpoint(bad_payload)
 
     not_mapping = tmp_path / "not-mapping.checkpoint"
-    not_mapping.write_bytes(CHECKPOINT_MAGIC + pickle.dumps([1, 2, 3]))
+    not_mapping.write_bytes(make_checkpoint_payload(pickle.dumps([1, 2, 3])))
     with pytest.raises(JournalCorruptionError):
         read_checkpoint(not_mapping)
 
@@ -209,6 +264,15 @@ def test_checkpoint_write_removes_temporary_file_on_failure(tmp_path, monkeypatc
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError):
         write_checkpoint(path, {"sequence": 1})
+    assert not path.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+@pytest.mark.persistence
+def test_checkpoint_write_rejects_unpicklable_state(tmp_path):
+    path = tmp_path / "state.checkpoint"
+    with pytest.raises((pickle.PicklingError, AttributeError, TypeError)):
+        write_checkpoint(path, {"bad": lambda: None})
     assert not path.exists()
     assert list(tmp_path.glob("*.tmp")) == []
 

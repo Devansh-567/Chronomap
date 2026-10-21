@@ -441,15 +441,18 @@ use pickle and are trusted local state, not a format for untrusted input.
 #### `checkpoint()`
 
 Writes the current store and TTL table to `<wal_path>.checkpoint` atomically,
-then truncates the journal while retaining the sequence counter. Automatic
-checkpoints run when the journal reaches `wal_auto_checkpoint_bytes`; set it to
-`None` to compact only when you call `checkpoint()` yourself.
+validates it with a length and CRC32 frame on read, then atomically resets the
+journal while retaining the sequence counter. Automatic checkpoints run when the
+journal reaches `wal_auto_checkpoint_bytes`; set it to `None` to compact only
+when you call `checkpoint()` yourself. Automatic checkpoint failures are
+logged and leave the journal intact rather than failing the user write.
 
 ```python
 cm.checkpoint()
 ```
 
-Calling `checkpoint()` without `wal_path` raises `JournalError`.
+Calling `checkpoint()` without `wal_path`, or after the map is closed, raises
+`JournalError` before writing a checkpoint.
 
 #### `close()`
 
@@ -788,10 +791,12 @@ with Journal("events.wal", sync=True) as journal:
 
 `Journal` is the append-only record layer used by `ChronoMap`. It validates
 sequence ordering and CRC checksums, truncates a torn final record on reopen,
-and exposes `sequence`, `records`, and `size` (plus `reset()`, `advance_to()`,
-and `clear_records()` for checkpoint/recovery coordination). Most applications should pass
-`wal_path` to `ChronoMap` instead of using `Journal` directly. Checkpoint
-helpers (`write_checkpoint()` / `read_checkpoint()`) are internal modules.
+and exposes `sequence`, `records`, `size`, and `closed` (plus `reset()`,
+`advance_to()`, and `clear_records()` for checkpoint/recovery coordination).
+`reset()` atomically replaces the journal with a fresh header while retaining
+the sequence counter. Most applications should pass `wal_path` to `ChronoMap`
+instead of using `Journal` directly. Checkpoint helpers (`write_checkpoint()`
+/ `read_checkpoint()`) are internal modules.
 
 ### `__version__`
 
