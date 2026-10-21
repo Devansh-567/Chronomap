@@ -505,12 +505,27 @@ restored = ChronoMap.load_pickle("state.pkl")
 Loading a pickle executes Python deserialization code. Only load files you
 trust.
 
-### Pandas export
+### Version export
+
+#### `iter_rows()`
+
+Streams one dictionary per live version with `key`, `value`, `timestamp`,
+`datetime`, and `version` fields. Keys and version lists are snapshotted under
+the read lock, so iteration does not hold the lock while the caller processes
+rows. Expired keys are skipped.
+
+```python
+for row in cm.iter_rows():
+    process(row["key"], row["value"], row["timestamp"])
+```
+
+`AsyncChronoMap.iter_rows()` is the asyncio equivalent and must be consumed
+with `async for`.
 
 #### `to_dataframe()`
 
-Returns a pandas `DataFrame` with one row per version. Requires the optional
-dependency:
+Returns a pandas `DataFrame` with one row per version, built from
+`iter_rows()`. Requires the optional dependency:
 
 ```bash
 pip install chronomap[pandas]

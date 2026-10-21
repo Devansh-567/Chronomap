@@ -112,6 +112,8 @@ at 64 MiB, or whenever you call `cm.checkpoint()`.
   The sync map supports WAL mode; `AsyncChronoMap` does not yet.
 - **Persistence** - checkpoint with `save_json()`, `save_pickle()`,
   `to_dict()`, and the matching loaders.
+- **Version export** - stream every live version with `iter_rows()`, or build
+  a pandas DataFrame with `to_dataframe()`.
 - **Async** - `AsyncChronoMap` is a separate asyncio-native implementation
   for use inside event loops.
 - **CLI inspection** - `python -m chronomap.cli show state.json` prints a
