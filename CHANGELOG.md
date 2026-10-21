@@ -50,6 +50,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `tests/test_core_correctness.py`: regression tests covering rejected
   TTLs, stored `None` values, batch validation, pruning, filtering,
   merge isolation, callback reentrancy, and serialization payload checks.
+- `benchmarks/benchmark_core.py`: repeatable microbenchmarks for
+  point reads, range reads, writes with a populated cache, and
+  `query(...).distinct()`.
+- `tests/test_versionlog.py` and `tests/test_query_fastpaths.py`: direct
+  coverage for binary-search boundaries, duplicate timestamps,
+  unhashable-value queries, and cache-backed hot paths.
+
+### Changed
+- **Time-travel lookups no longer allocate a timestamp list.** Point
+  reads, out-of-order writes, snapshots, and version ranges now binary
+  search the `(timestamp, value)` list directly through
+  `chronomap._versionlog`, removing an O(history) allocation from every
+  read.
+- **Range reads are now O(log n + k).** `get_range()` and
+  `versions(...)` slice version histories at the requested boundaries
+  instead of scanning every stored version.
+- **Cache invalidation is now O(entries for one key), not O(cache
+  size).** `LRUCache` maintains a per-store-key index, so writes no
+  longer scan every cached timestamp.
+- **Query hot paths scale better.** `values_in()` uses a set for
+  hashable candidates, `distinct()` uses a hash set, and
+  `get_latest_keys()` uses `heapq.nlargest()` instead of sorting the
+  full map.
+- **History pruning mutates in place.** `max_history` trimming no longer
+  copies the retained slice.
+
+Benchmarks on Python 3.13 for a 100k-version key improved from roughly
+3.3 ms to 4.6 us per point read, 3.7 ms to 6.7 us per 10-version range
+read, 3.1 ms to 5.3 us per write with a 50k-entry cache, and 669 ms to
+2.5 ms for `distinct()` over 5k unique values.
 
 ### Fixed
 - **Rejected TTLs used to leave a version behind.** `put()` appended the
