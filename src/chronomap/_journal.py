@@ -65,8 +65,10 @@ def write_checkpoint(path: PathLike, state: Dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            payload = pickle.dumps(state, protocol=4)
             handle.write(CHECKPOINT_MAGIC)
-            pickle.dump(state, handle, protocol=4)
+            handle.write(_FRAME.pack(len(payload), zlib.crc32(payload) & 0xFFFFFFFF))
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, destination)
@@ -84,8 +86,17 @@ def read_checkpoint(path: PathLike) -> Dict[str, Any]:
     raw = Path(path).read_bytes()
     if not raw.startswith(CHECKPOINT_MAGIC):
         raise JournalCorruptionError("Checkpoint header is missing or invalid")
+    frame_start = len(CHECKPOINT_MAGIC)
+    if len(raw) < frame_start + _FRAME.size:
+        raise JournalCorruptionError("Checkpoint frame is truncated")
+    length, checksum = _FRAME.unpack_from(raw, frame_start)
+    payload = raw[frame_start + _FRAME.size :]
+    if length != len(payload):
+        raise JournalCorruptionError("Checkpoint payload length does not match its frame")
+    if zlib.crc32(payload) & 0xFFFFFFFF != checksum:
+        raise JournalCorruptionError("Checkpoint checksum failed")
     try:
-        state = pickle.loads(raw[len(CHECKPOINT_MAGIC) :])
+        state = pickle.loads(payload)
     except Exception as exc:
         raise JournalCorruptionError("Could not decode checkpoint payload") from exc
     if not isinstance(state, dict):
@@ -110,6 +121,10 @@ class Journal:
     @property
     def sequence(self) -> int:
         return self._sequence
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     @property
     def records(self) -> Tuple[Tuple[int, str, Dict[str, Any]], ...]:
@@ -227,18 +242,35 @@ class Journal:
             return sequence
 
     def reset(self) -> None:
-        """Discard all journal records while retaining the sequence counter."""
+        """Atomically discard all journal records while retaining the sequence counter."""
         with self._lock:
             if self._closed or self._file is None:
                 raise JournalError("Journal is closed")
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=self.path.name + ".",
+                suffix=".tmp",
+                dir=str(self.path.parent),
+            )
             handle = self._file
-            handle.seek(0)
-            handle.truncate()
-            handle.write(MAGIC)
-            handle.flush()
-            if self._sync:
-                os.fsync(handle.fileno())
-            self._records.clear()
+            try:
+                with os.fdopen(descriptor, "wb") as writer:
+                    writer.write(MAGIC)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                handle.close()
+                self._file = None
+                os.replace(temporary_name, self.path)
+                _fsync_directory(self.path.parent)
+                self._file = open(self.path, "r+b")
+                self._records.clear()
+            except BaseException:
+                try:
+                    os.unlink(temporary_name)
+                except OSError:
+                    pass
+                if self._file is None:
+                    self._file = open(self.path, "r+b")
+                raise
 
     def close(self) -> None:
         with self._lock:

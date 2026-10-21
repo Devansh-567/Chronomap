@@ -15,15 +15,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `AsyncChronoMap` does not support WAL mode yet.
 - `Journal`, `JournalError`, and `JournalCorruptionError` exports for callers
   that need the CRC-framed record layer directly.
+- Checkpoint files are length- and CRC32-framed; truncated, extended, or
+  checksum-corrupted checkpoints raise `JournalCorruptionError`. Journal
+  resets use a temporary header and atomic rename, and failed automatic
+  compactions are logged and leave the journal intact instead of failing the
+  triggering write.
 - WAL records cover puts, batch writes, deletes, TTL changes, pruning,
   merges, rollbacks, clears, and expired-key sweeps, and `from_dict(...,
-  wal_path=...)` logs imported state as a replacement record.
+  wal_path=...)` logs imported state as a replacement record. Replay validates
+  prune counts and removes expired TTL state before later writes, so a crash
+  cannot resurrect a stale deadline.
 - `get_stats()` reports `journal_path`, `journal_bytes`, and
   `journal_sequence` for WAL-backed maps.
-- `tests/test_journal.py`, `tests/test_wal.py`, and
+- `tests/test_journal.py`, `tests/test_wal.py`, `tests/test_wal_crash.py`, and
   `tests/test_module_entry.py` cover framing, checksums, torn writes,
   checkpoints, replay of every mutation, TTL expiry edge cases, WAL
-  validation, close/destructor behavior, and the `__main__` entrypoint.
+  validation, abrupt process exits with and without a checkpoint,
+  close/destructor behavior, and the `__main__` entrypoint.
 - Pytest markers (`core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
   `async_map`, `cli`) applied across the whole test suite, so each
   subsystem's tests can be run and reported on independently

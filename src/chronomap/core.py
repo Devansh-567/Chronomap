@@ -216,6 +216,8 @@ class ChronoMap:
     def _checkpoint_unlocked(self) -> None:
         if self._wal is None:
             raise JournalError("WAL is not enabled")
+        if self._wal.closed:
+            raise JournalError("Journal is closed")
         state = {
             "sequence": self._wal.sequence,
             "store": deepcopy(self._store),
@@ -242,7 +244,7 @@ class ChronoMap:
         ):
             try:
                 self._checkpoint_unlocked()
-            except (OSError, JournalError) as exc:
+            except Exception as exc:
                 logger.warning("WAL auto-checkpoint failed; keeping journal: %s", exc)
 
     def _apply_journal_put(
@@ -269,8 +271,7 @@ class ChronoMap:
         if not versions or ts >= versions[-1][0]:
             versions.append((ts, value))
         else:
-            times = [version[0] for version in versions]
-            versions.insert(bisect.bisect_right(times, ts), (ts, value))
+            versions.insert(insertion_point(versions, ts), (ts, value))
         if expires_at is not None:
             self._ttl[key] = float(expires_at)
         self._auto_prune(key)
@@ -307,6 +308,8 @@ class ChronoMap:
             keep_last = data.get("keep_last")
             cutoff = data.get("cutoff")
             if keep_last is not None:
+                if isinstance(keep_last, bool) or not isinstance(keep_last, int) or keep_last < 0:
+                    raise JournalCorruptionError("Journal contains an invalid prune count")
                 if keep_last == 0:
                     versions.clear()
                 else:
@@ -334,7 +337,8 @@ class ChronoMap:
                 raise JournalCorruptionError("Journal contains an invalid replacement state")
             self._store = store
             self._ttl = ttl
-            self._snapshot_time = data.get("snapshot_time")
+            if data.get("restore_snapshot_time", False):
+                self._snapshot_time = data.get("snapshot_time")
             if self._cache:
                 self._cache.clear()
         elif operation == "merge":
@@ -1724,14 +1728,20 @@ class ChronoMap:
         instance._ttl = normalized_ttl
         instance._snapshot_time = snapshot_time
         if instance._wal is not None:
-            instance._wal.append(
-                "replace",
-                {
-                    "store": instance._store,
-                    "ttl": instance._ttl,
-                    "snapshot_time": instance._snapshot_time,
-                },
-            )
+            try:
+                instance._wal.append(
+                    "replace",
+                    {
+                        "store": instance._store,
+                        "ttl": instance._ttl,
+                        "snapshot_time": instance._snapshot_time,
+                        "restore_snapshot_time": True,
+                    },
+                )
+                instance._maybe_checkpoint()
+            except BaseException:
+                instance.close()
+                raise
         return instance
 
     def save_json(self, file_path: Union[str, Path]) -> None:

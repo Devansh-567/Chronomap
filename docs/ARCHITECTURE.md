@@ -330,6 +330,10 @@ truncated; a complete frame with a bad checksum or an out-of-order sequence
 raises `JournalCorruptionError`. Pickle is used for records, so the journal is
 trusted local state.
 
+Checkpoints use the same length + CRC32 framing after `CMCHK1\n`. A truncated,
+extended, or checksum-corrupted checkpoint raises `JournalCorruptionError`
+instead of being partially applied.
+
 ### Write path
 
 Mutating methods append a journal record before applying the in-memory
@@ -343,12 +347,16 @@ records from concurrent writers are ordered consistently.
 ### Checkpoints and recovery
 
 `checkpoint()` serializes a deep copy of the store and TTL table to
-`<wal_path>.checkpoint`, fsyncs a temporary file, atomically replaces the
-destination, then resets the journal while retaining its sequence counter.
-Recovery loads the checkpoint, replays only records with higher sequence
-numbers, and sets the next sequence above the checkpoint. A crash between
-checkpoint replacement and journal reset is therefore safe: the stale journal
-tail is skipped. Automatic checkpoints default to every 64 MiB of journal.
+`<wal_path>.checkpoint`, writes a length + CRC32 frame, fsyncs a temporary
+file, atomically replaces the destination, then resets the journal while
+retaining its sequence counter. Recovery loads the checkpoint, replays only
+records with higher sequence numbers, and sets the next sequence above the
+checkpoint. A crash between checkpoint replacement and journal reset is
+therefore safe: the stale journal tail is skipped. The journal reset itself
+uses a temporary header plus atomic rename, so a crash can only leave the
+checkpoint with either the old journal tail or a fresh empty journal.
+Automatic checkpoints default to every 64 MiB of journal and never turn a
+failed compaction into a failed user write.
 
 WAL-backed maps are single-writer: there is no file lock stopping two
 processes from opening the same path. Closing the map stops the TTL thread and
