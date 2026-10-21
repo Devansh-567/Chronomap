@@ -60,6 +60,86 @@ def test_journal_append_replay_and_reset(tmp_path):
 
 
 @pytest.mark.persistence
+def test_journal_streams_records_without_retaining_them(tmp_path):
+    path = tmp_path / "state.wal"
+    journal = Journal(path, sync=False)
+    journal.append("put", {"key": "a", "value": 1})
+    journal.append("put", {"key": "b", "value": 2})
+    journal.append("delete", {"key": "a"})
+    journal.close()
+
+    seen = []
+    reopened = Journal(
+        path,
+        retain_records=False,
+        record_consumer=lambda sequence, operation, data: seen.append((sequence, operation, data)),
+    )
+    try:
+        assert reopened.records == ()
+        assert [record[0] for record in seen] == [1, 2, 3]
+        assert seen[2][1] == "delete"
+        assert reopened.sequence == 3
+    finally:
+        reopened.close()
+
+
+@pytest.mark.persistence
+def test_journal_skips_checkpointed_records_for_the_consumer(tmp_path):
+    path = tmp_path / "state.wal"
+    journal = Journal(path, sync=False)
+    journal.append("put", {"key": "a", "value": 1})
+    journal.append("put", {"key": "b", "value": 2})
+    journal.append("delete", {"key": "a"})
+    journal.close()
+
+    seen = []
+    reopened = Journal(
+        path,
+        retain_records=False,
+        skip_through=2,
+        record_consumer=lambda sequence, operation, data: seen.append(sequence),
+    )
+    try:
+        assert seen == [3]
+        assert reopened.sequence == 3
+    finally:
+        reopened.close()
+
+
+@pytest.mark.persistence
+def test_journal_rejects_invalid_recovery_options(tmp_path):
+    path = tmp_path / "state.wal"
+    with pytest.raises(JournalError):
+        Journal(path, retain_records=1)
+    with pytest.raises(JournalError):
+        Journal(path, skip_through=-1)
+    with pytest.raises(JournalError):
+        Journal(path, skip_through=True)
+    with pytest.raises(JournalError):
+        Journal(path, record_consumer=object())
+
+
+@pytest.mark.persistence
+def test_journal_consumer_failure_releases_the_path_lock(tmp_path):
+    path = tmp_path / "state.wal"
+    journal = Journal(path, sync=False)
+    journal.append("put", {"key": "a", "value": 1})
+    journal.close()
+
+    def fail(sequence, operation, data):
+        raise RuntimeError("consumer failed")
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        Journal(path, record_consumer=fail)
+
+    reopened = Journal(path)
+    try:
+        assert len(reopened.records) == 1
+    finally:
+        reopened.close()
+
+
+@pytest.mark.persistence
 def test_journal_context_manager(tmp_path):
     path = tmp_path / "state.wal"
     with Journal(path) as journal:

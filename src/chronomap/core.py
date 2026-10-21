@@ -153,13 +153,17 @@ class ChronoMap:
         self._wal: Optional[Journal] = None
         self._wal_auto_checkpoint_bytes = wal_auto_checkpoint_bytes
         if wal_path is not None:
-            try:
-                self._wal = Journal(Path(wal_path), sync=wal_sync)
-                self._replay_journal()
-            except BaseException:
-                if self._wal is not None:
-                    self._wal.close()
-                raise
+            journal_path = Path(wal_path)
+            checkpoint_sequence = self._restore_checkpoint(Path(str(journal_path) + ".checkpoint"))
+            journal = Journal(
+                journal_path,
+                sync=wal_sync,
+                retain_records=False,
+                skip_through=checkpoint_sequence,
+                record_consumer=self._consume_journal_record,
+            )
+            journal.advance_to(checkpoint_sequence)
+            self._wal = journal
 
         self._ttl_cleanup_thread: Optional[TTLCleanupThread] = None
         if enable_ttl_cleanup:
@@ -373,38 +377,36 @@ class ChronoMap:
         else:
             raise JournalCorruptionError(f"Unknown journal operation: {operation!r}")
 
-    def _replay_journal(self) -> None:
-        if self._wal is None:
-            return
-        checkpoint_sequence = 0
-        checkpoint_path = self._journal_checkpoint_path()
-        if checkpoint_path.exists():
-            state = read_checkpoint(checkpoint_path)
-            sequence = state.get("sequence")
-            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
-                raise JournalCorruptionError("Checkpoint contains an invalid sequence number")
-            store = state.get("store")
-            ttl = state.get("ttl")
-            if not isinstance(store, dict) or not isinstance(ttl, dict):
-                raise JournalCorruptionError("Checkpoint contains an invalid state")
-            self._store = store
-            self._ttl = ttl
-            self._snapshot_time = state.get("snapshot_time")
-            checkpoint_sequence = sequence
+    def _restore_checkpoint(self, checkpoint_path: Path) -> int:
+        if not checkpoint_path.exists():
+            return 0
+        state = read_checkpoint(checkpoint_path)
+        sequence = state.get("sequence")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+            raise JournalCorruptionError("Checkpoint contains an invalid sequence number")
+        store = state.get("store")
+        ttl = state.get("ttl")
+        if not isinstance(store, dict) or not isinstance(ttl, dict):
+            raise JournalCorruptionError("Checkpoint contains an invalid state")
+        self._store = store
+        self._ttl = ttl
+        self._snapshot_time = state.get("snapshot_time")
+        return sequence
 
-        for sequence, operation, data in self._wal.records:
-            if sequence <= checkpoint_sequence:
-                continue
-            try:
-                self._apply_journal_record(operation, data)
-            except JournalCorruptionError:
-                raise
-            except Exception as exc:
-                raise JournalCorruptionError(
-                    f"Could not replay journal record {sequence} ({operation!r})"
-                ) from exc
-        self._wal.advance_to(checkpoint_sequence)
-        self._wal.clear_records()
+    def _consume_journal_record(
+        self,
+        sequence: int,
+        operation: str,
+        data: Dict[str, Any],
+    ) -> None:
+        try:
+            self._apply_journal_record(operation, data)
+        except JournalCorruptionError:
+            raise
+        except Exception as exc:
+            raise JournalCorruptionError(
+                f"Could not replay journal record {sequence} ({operation!r})"
+            ) from exc
 
     def _parse_timestamp(self, timestamp: Union[float, str, datetime]) -> float:
         if isinstance(timestamp, bool):

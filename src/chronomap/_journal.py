@@ -23,7 +23,7 @@ import tempfile
 import threading
 import zlib
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional, Tuple, Union
+from typing import IO, Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .exceptions import ChronoMapError
 
@@ -133,9 +133,30 @@ def read_checkpoint(path: PathLike) -> Dict[str, Any]:
 
 
 class Journal:
-    """Append-only, checksummed journal."""
+    """Append-only, checksummed journal.
 
-    def __init__(self, path: PathLike, *, sync: bool = True) -> None:
+    By default, reopening a journal retains every decoded record in
+    ``records``. Recovery-oriented callers can disable retention and pass a
+    ``record_consumer`` so records are applied and released one at a time.
+    ``skip_through`` suppresses consumer calls for records already covered by
+    a checkpoint while still validating and sequencing them.
+    """
+
+    def __init__(
+        self,
+        path: PathLike,
+        *,
+        sync: bool = True,
+        retain_records: bool = True,
+        skip_through: int = 0,
+        record_consumer: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
+    ) -> None:
+        if not isinstance(retain_records, bool):
+            raise JournalError("retain_records must be a boolean")
+        if isinstance(skip_through, bool) or not isinstance(skip_through, int) or skip_through < 0:
+            raise JournalError("skip_through must be a non-negative integer")
+        if record_consumer is not None and not callable(record_consumer):
+            raise JournalError("record_consumer must be callable")
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._sync = sync
@@ -143,6 +164,9 @@ class Journal:
         self._closed = False
         self._sequence = 0
         self._records: List[Tuple[int, str, Dict[str, Any]]] = []
+        self._retain_records = retain_records
+        self._skip_through = skip_through
+        self._record_consumer = record_consumer
         self._file: Optional[IO[bytes]] = None
         self._lock_fd: Optional[int] = None
         self._acquire_path_lock()
@@ -249,7 +273,10 @@ class Journal:
                 sequence, operation, data = record
                 if sequence <= last_sequence:
                     raise JournalCorruptionError("Journal sequence numbers are not increasing")
-                self._records.append((sequence, operation, data))
+                if sequence > self._skip_through and self._record_consumer is not None:
+                    self._record_consumer(sequence, operation, data)
+                if self._retain_records:
+                    self._records.append((sequence, operation, data))
                 last_sequence = sequence
                 valid_end = handle.tell()
 
