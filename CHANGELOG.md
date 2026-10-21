@@ -148,6 +148,10 @@ Benchmarks on Python 3.13 for a 100k-version key improved from roughly
 3.3 ms to 4.6 us per point read, 3.7 ms to 6.7 us per 10-version range
 read, 3.1 ms to 5.3 us per write with a 50k-entry cache, and 669 ms to
 2.5 ms for `distinct()` over 5k unique values.
+- **CI now exercises Windows and macOS.** A platform matrix runs the complete
+  suite with the 100% coverage gate on Python 3.12 for both operating systems,
+  covering the `msvcrt` and `fcntl` WAL lock backends and platform-specific
+  filesystem behavior.
 
 ### Fixed
 - **Compressed pickle loading could raise `UnicodeDecodeError`.** When a

@@ -130,6 +130,30 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  platform:
+    name: ${{ matrix.os }} (Python 3.12, full suite)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev + pandas extras
+        run: pip install -e ".[dev,pandas]"
+
+      - name: Run tests with coverage
+        run: pytest tests/ -q --cov=chronomap --cov-report=term-missing --cov-fail-under=100
+
   lint:
     name: Formatting (black)
     runs-on: ubuntu-latest
