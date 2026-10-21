@@ -426,6 +426,16 @@ assert list(frame.columns) == ["key", "value", "timestamp", "datetime", "version
 
 The frame has one row per version, not one row per key.
 
+For large maps, stream the same rows instead of materializing a frame:
+
+```python
+for row in cm.iter_rows():
+    print(row["key"], row["timestamp"], row["value"])
+```
+
+`iter_rows()` snapshots keys and version lists under the read lock and yields
+rows afterward, so slow consumers do not block writers.
+
 ## Catch package errors precisely
 
 Catch `ChronoMapKeyError` for strict reads, `ChronoMapValueError` for bad

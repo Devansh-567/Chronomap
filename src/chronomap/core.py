@@ -1496,6 +1496,30 @@ class ChronoMap:
 
     # -- export -----------------------------------------------------------------
 
+    def iter_rows(self) -> Iterator[Dict[str, Any]]:
+        """Stream one row per live version without building the full result.
+
+        Keys and version lists are snapshotted under the read lock; values are
+        not deep-copied. Rows match the columns returned by ``to_dataframe()``.
+        """
+        self._acquire_read()
+        try:
+            snapshot = [
+                (key, list(versions)) for key, versions in self._store.items() if not self._is_expired(key)
+            ]
+        finally:
+            self._release_read()
+
+        for key, versions in snapshot:
+            for version_idx, (ts, value) in enumerate(versions):
+                yield {
+                    "key": key,
+                    "value": value,
+                    "timestamp": ts,
+                    "datetime": datetime.fromtimestamp(ts),
+                    "version": version_idx,
+                }
+
     def to_dataframe(self):
         """Export to a pandas DataFrame (columns: key, value, timestamp, datetime, version).
 
@@ -1508,25 +1532,7 @@ class ChronoMap:
                 "pandas is required for to_dataframe(). Install with: pip install chronomap[pandas]"
             ) from exc
 
-        self._acquire_read()
-        try:
-            rows = []
-            for key, versions in self._store.items():
-                if self._is_expired(key):
-                    continue
-                for version_idx, (ts, val) in enumerate(versions):
-                    rows.append(
-                        {
-                            "key": key,
-                            "value": val,
-                            "timestamp": ts,
-                            "datetime": datetime.fromtimestamp(ts),
-                            "version": version_idx,
-                        }
-                    )
-            return pd.DataFrame(rows)
-        finally:
-            self._release_read()
+        return pd.DataFrame(list(self.iter_rows()))
 
     # -- container protocol -------------------------------------------------------
 

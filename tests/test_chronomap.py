@@ -1441,6 +1441,25 @@ class TestStatistics:
 
 
 @pytest.mark.core
+def test_iter_rows_streams_live_versions():
+    cm = ChronoMap(enable_ttl_cleanup=False)
+    cm.put("a", 1, timestamp=10)
+    cm.put("a", 2, timestamp=20)
+    cm.put("b", "x", timestamp=15)
+    cm.put("dead", 4, ttl=0.001)
+    time.sleep(0.01)
+
+    rows = list(cm.iter_rows())
+    assert [(row["key"], row["timestamp"], row["value"], row["version"]) for row in rows] == [
+        ("a", 10.0, 1, 0),
+        ("a", 20.0, 2, 1),
+        ("b", 15.0, "x", 0),
+    ]
+    assert set(rows[0]) == {"key", "value", "timestamp", "datetime", "version"}
+    assert rows[0]["datetime"] == datetime.fromtimestamp(10)
+
+
+@pytest.mark.core
 class TestPandasExport:
     """Test Pandas DataFrame export."""
 

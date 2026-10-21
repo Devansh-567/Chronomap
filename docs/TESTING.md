@@ -105,13 +105,13 @@ and makes ordering irrelevant.
 
 | Marker | Meaning | Current selection |
 | --- | --- | --- |
-| `core` | Core read/write/query/merge/history behavior | 268 |
+| `core` | Core read/write/query/merge/history behavior | 269 |
 | `cache` | `LRUCache` behavior | 10 |
 | `lock` | `RWLock` and concurrency behavior | 5 |
 | `memory` | Memory monitor and size estimation | 8 |
 | `ttl` | TTL expiry and cleanup thread | 55 |
 | `snapshot` | Snapshot, rollback, and diff | 23 |
-| `async_map` | `AsyncChronoMap` behavior | 114 |
+| `async_map` | `AsyncChronoMap` behavior | 115 |
 | `cli` | CLI behavior | 81 |
 | `persistence` | Archive, codec, and WAL behavior | 134 |
 | `query` | Fluent value and version queries | 73 |

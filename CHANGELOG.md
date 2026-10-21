@@ -82,6 +82,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - `tests/test_versionlog.py` and `tests/test_query_fastpaths.py`: direct
   coverage for binary-search boundaries, duplicate timestamps,
   unhashable-value queries, and cache-backed hot paths.
+- `ChronoMap.iter_rows()` and `AsyncChronoMap.iter_rows()` stream one
+  dictionary per live version without holding the lock across yields.
+  `to_dataframe()` now builds on the same snapshot.
 
 ### Changed
 - **Time-travel lookups no longer allocate a timestamp list.** Point

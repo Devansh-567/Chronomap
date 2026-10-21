@@ -1034,6 +1034,26 @@ async def test_async_stats_and_reset():
 
 @pytest.mark.async_map
 @pytest.mark.asyncio
+async def test_async_iter_rows_streams_live_versions():
+    cm = AsyncChronoMap()
+    await cm.put("a", 1, timestamp=10)
+    await cm.put("a", 2, timestamp=20)
+    await cm.put("b", "x", timestamp=15)
+    await cm.put("dead", 4, ttl=0.001)
+    await asyncio.sleep(0.01)
+
+    rows = [row async for row in cm.iter_rows()]
+    assert [(row["key"], row["timestamp"], row["value"], row["version"]) for row in rows] == [
+        ("a", 10.0, 1, 0),
+        ("a", 20.0, 2, 1),
+        ("b", 15.0, "x", 0),
+    ]
+    assert set(rows[0]) == {"key", "value", "timestamp", "datetime", "version"}
+    assert rows[0]["datetime"] == datetime.fromtimestamp(10)
+
+
+@pytest.mark.async_map
+@pytest.mark.asyncio
 async def test_async_to_dataframe_exports_live_history():
     pytest.importorskip("pandas")
     cm = AsyncChronoMap()
