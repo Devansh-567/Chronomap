@@ -63,6 +63,9 @@ ChronoMap(
     enable_ttl_cleanup=True,
     ttl_cleanup_interval=60.0,
     max_memory_mb=None,
+    wal_path=None,
+    wal_sync=True,
+    wal_auto_checkpoint_bytes=64 * 1024 * 1024,
 )
 ```
 
@@ -75,6 +78,9 @@ ChronoMap(
 | `enable_ttl_cleanup` | Starts a background thread that sweeps expired keys. |
 | `ttl_cleanup_interval` | Seconds between background sweeps. |
 | `max_memory_mb` | Approximate memory ceiling used by the memory monitor. |
+| `wal_path` | Enables the write-ahead journal at this path and replays it at construction. |
+| `wal_sync` | Flushes and fsyncs each journal record before the mutation is applied. |
+| `wal_auto_checkpoint_bytes` | Journal size that triggers an automatic checkpoint. `None` disables it. |
 
 The default configuration is suitable for a single-process service:
 
@@ -373,7 +379,8 @@ stats = cm.get_stats()
 
 When the cache is enabled, `cache_hits`, `cache_misses`, `cache_size`, and
 `cache_hit_rate` are included. When the cleanup thread is enabled,
-`ttl_cleanup_count` is included as well.
+`ttl_cleanup_count` is included as well. WAL-backed maps also expose
+`journal_path`, `journal_bytes`, and `journal_sequence`.
 
 #### `reset_stats()`
 
@@ -407,6 +414,57 @@ Registers a callback for one key. The callback receives
 #### `unsubscribe(key, callback)`
 
 Unregisters a key callback. Returns `True` if it was registered.
+
+### Durability
+
+#### `wal_path` journals
+
+Passing `wal_path` enables an append-only write-ahead log for the synchronous
+map. Every mutating operation is encoded as a CRC-checked record before the
+in-memory state changes. With the default `wal_sync=True`, each record is
+flushed and fsynced first. Reopening a map at the same path restores the store,
+TTL deadlines, and snapshot timestamp.
+
+```python
+cm = ChronoMap(wal_path="chronomap.wal")
+cm.put("region", "us-east")
+cm.close()
+
+recovered = ChronoMap(wal_path="chronomap.wal")
+assert recovered.get("region") == "us-east"
+```
+
+A torn final record is discarded during recovery. A complete record with a
+bad checksum raises `JournalCorruptionError` instead of being skipped. Journals
+use pickle and are trusted local state, not a format for untrusted input.
+
+#### `checkpoint()`
+
+Writes the current store and TTL table to `<wal_path>.checkpoint` atomically,
+then truncates the journal while retaining the sequence counter. Automatic
+checkpoints run when the journal reaches `wal_auto_checkpoint_bytes`; set it to
+`None` to compact only when you call `checkpoint()` yourself.
+
+```python
+cm.checkpoint()
+```
+
+Calling `checkpoint()` without `wal_path` raises `JournalError`.
+
+#### `close()`
+
+Stops the TTL cleanup thread and closes the journal. `ChronoMap` is also a
+context manager:
+
+```python
+with ChronoMap(wal_path="chronomap.wal") as cm:
+    cm.put("region", "us-east")
+```
+
+`close()` is idempotent. The WAL is designed for one live map per file; it does
+not take a cross-process lock. `AsyncChronoMap` does not support WAL mode yet.
+`from_dict(..., wal_path=...)` logs the imported state as a replacement record
+so the imported map survives a later recovery.
 
 ### Persistence
 
@@ -684,7 +742,8 @@ the snapshot taken at entry.
 
 ## Supporting exports
 
-The package also exports two small building blocks and the version string.
+The package also exports small building blocks, the journal primitive, and the
+version string.
 
 ### `RWLock`
 
@@ -717,6 +776,23 @@ cache.get_stats()
 A thread-safe LRU cache keyed by `(store_key, timestamp)`. The public methods
 are `get`, `put`, `invalidate`, `clear`, and `get_stats`.
 
+### `Journal`
+
+```python
+from chronomap import Journal
+
+with Journal("events.wal", sync=True) as journal:
+    sequence = journal.append("event", {"key": "value"})
+    assert journal.sequence == sequence
+```
+
+`Journal` is the append-only record layer used by `ChronoMap`. It validates
+sequence ordering and CRC checksums, truncates a torn final record on reopen,
+and exposes `sequence`, `records`, and `size` (plus `reset()`, `advance_to()`,
+and `clear_records()` for checkpoint/recovery coordination). Most applications should pass
+`wal_path` to `ChronoMap` instead of using `Journal` directly. Checkpoint
+helpers (`write_checkpoint()` / `read_checkpoint()`) are internal modules.
+
 ### `__version__`
 
 The installed package version as a string.
@@ -738,6 +814,8 @@ All package exceptions derive from `ChronoMapError`, which derives from
 | `UnsupportedFormatError` | Unknown archive format, version, or compression. |
 | `CorruptArchiveError` | Structurally invalid or malformed archive contents. |
 | `CodecError` | A value cannot be represented by the selected archive codec. |
+| `JournalError` | Base class for WAL open, append, checkpoint, or close failures. |
+| `JournalCorruptionError` | A WAL or checkpoint is malformed, out of order, or fails its checksum. |
 
 ```python
 from chronomap import ChronoMapKeyError
@@ -766,6 +844,9 @@ The CLI accepts both JSON and pickle files written by `save_json()` and
 - `get` and `put` use binary search over a key's version list.
 - `query`, `aggregate`, and `count` scan every live key.
 - `diff` and `merge` walk both maps.
-- The structure is thread-safe within one process, not process-safe.
+- WAL appends are O(record size) plus an fsync by default; checkpoints are
+  O(total state) and are amortized by the journal size threshold.
+- The structure is thread-safe within one process, not process-safe. Use one
+  live `ChronoMap` per WAL path.
 - The memory ceiling is an approximation intended as a tripwire, not a hard
   allocator guarantee.

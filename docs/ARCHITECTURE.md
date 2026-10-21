@@ -18,12 +18,14 @@ It deliberately does not provide:
 - process-to-process replication or a network protocol
 - durable storage by default
 - transactions across keys
-- an append-only write-ahead log
+- multi-process coordination over a WAL
 - automatic schema migration
 
-Persistence is whole-map snapshot serialization, not a database. If you need
-a durable multi-process store, use a database and keep ChronoMap as a
-time-indexed cache or projection.
+Persistence is whole-map snapshot serialization, not a database. The
+synchronous map can opt into a single-writer write-ahead log for crash
+recovery, but ChronoMap is still in-memory and does not coordinate multiple
+processes. If you need a durable multi-process store, use a database and keep
+ChronoMap as a time-indexed cache or projection.
 
 ## Module map
 
@@ -36,6 +38,7 @@ time-indexed cache or projection.
 | `src/chronomap/_memory.py` | `MemoryMonitor`: approximate recursive size estimate and optional ceiling. |
 | `src/chronomap/_ttl_cleanup.py` | `TTLCleanupThread`: daemon thread that periodically sweeps expired keys. |
 | `src/chronomap/_snapshot.py` | `SnapshotContext`: rollback-on-exception context manager. |
+| `src/chronomap/_journal.py` | `Journal`: CRC-framed WAL records and atomic checkpoint helpers. |
 | `src/chronomap/exceptions.py` | The `ChronoMapError` hierarchy. |
 | `src/chronomap/cli.py` | The `python -m chronomap.cli show` inspector. |
 | `src/chronomap/_version.py` | Package version string. |
@@ -306,9 +309,55 @@ Neither operation deduplicates identical `(timestamp, value)` pairs. A merge
 of two maps that share history can therefore introduce duplicate versions.
 If that matters, prune or compare before merging.
 
+## Durability
+
+Durability is opt-in through `ChronoMap(wal_path=...)`. The synchronous map
+uses `_journal.py`; `AsyncChronoMap` does not have a WAL implementation.
+
+### Journal format
+
+The journal starts with `CMWAL1\n`, followed by frames of:
+
+```text
+4-byte big-endian payload length
+4-byte big-endian CRC32
+pickled (sequence, operation, data) tuple
+```
+
+Sequence numbers increase monotonically. On open, the journal validates every
+complete frame. An incomplete trailing frame is treated as a torn write and
+truncated; a complete frame with a bad checksum or an out-of-order sequence
+raises `JournalCorruptionError`. Pickle is used for records, so the journal is
+trusted local state.
+
+### Write path
+
+Mutating methods append a journal record before applying the in-memory
+mutation. With the default `wal_sync=True`, each append flushes and fsyncs the
+file first. The records cover puts, deletes, TTL changes, pruning, merges,
+rollbacks, and clears. Expired-key purges and background cleanup are logged
+too, so replay does not accidentally resurrect an expired TTL on a later
+write. The in-memory write lock is held across journal append and mutation, so
+records from concurrent writers are ordered consistently.
+
+### Checkpoints and recovery
+
+`checkpoint()` serializes a deep copy of the store and TTL table to
+`<wal_path>.checkpoint`, fsyncs a temporary file, atomically replaces the
+destination, then resets the journal while retaining its sequence counter.
+Recovery loads the checkpoint, replays only records with higher sequence
+numbers, and sets the next sequence above the checkpoint. A crash between
+checkpoint replacement and journal reset is therefore safe: the stale journal
+tail is skipped. Automatic checkpoints default to every 64 MiB of journal.
+
+WAL-backed maps are single-writer: there is no file lock stopping two
+processes from opening the same path. Closing the map stops the TTL thread and
+the journal. The whole-map JSON/pickle persistence helpers are separate from
+the WAL.
+
 ## Persistence
 
-Persistence is implemented in `core.py` on the current `main` branch:
+Whole-map persistence is implemented in `core.py`:
 
 - `to_dict()` deep-copies the store and TTL table into a plain dictionary
 - `from_dict()` reconstructs a map from that shape
@@ -317,7 +366,8 @@ Persistence is implemented in `core.py` on the current `main` branch:
 
 The stored payload contains `store`, `ttl`, `snapshot_time`, `version`, and
 `max_history`. Version metadata is written for diagnostics; loading does not
-currently run migrations.
+currently run migrations. Passing `wal_path` to `from_dict()` also logs the
+imported state as a replacement record.
 
 JSON cannot represent non-string keys. `save_json()` coerces keys with
 `str()`, so loading a JSON file can change key identity. Pickle preserves key
@@ -376,9 +426,12 @@ and type checking alongside the tests.
 - The memory estimate is approximate.
 - Callbacks run inline in the writer's execution path.
 - The async implementation has a smaller API surface than the sync map.
-- Persistence is a snapshot, not a write-ahead log.
+- WAL mode is synchronous-only; `AsyncChronoMap` replays nothing on startup.
+- WAL recovery loads all journal records into memory before applying them.
+- WAL checkpoints rewrite the whole store and TTL table.
+- One live process must own a WAL path; there is no file lock.
 - JSON persistence coerces keys to strings.
-- Pickle persistence is unsafe for untrusted input.
+- Pickle persistence and WAL/checkpoint files are unsafe for untrusted input.
 - There is no cross-process coordination.
 
 ## Extending the store

@@ -28,6 +28,7 @@ jobs:
             core:
               - 'src/chronomap/core.py'
               - 'src/chronomap/__init__.py'
+              - 'src/chronomap/__main__.py'
               - 'src/chronomap/exceptions.py'
               - 'src/chronomap/_cache.py'
               - 'src/chronomap/_snapshot.py'
@@ -35,6 +36,7 @@ jobs:
               - 'tests/test_basic.py'
               - 'tests/test_coverage_gaps.py'
               - 'tests/test_core_correctness.py'
+              - 'tests/test_module_entry.py'
             cache:
               - 'src/chronomap/_cache.py'
               - 'tests/test_core_correctness.py'
@@ -53,7 +55,10 @@ jobs:
               - 'tests/test_async_parity.py'
             persistence:
               - 'src/chronomap/persistence.py'
+              - 'src/chronomap/_journal.py'
               - 'tests/test_persistence.py'
+              - 'tests/test_journal.py'
+              - 'tests/test_wal.py'
             cli:
               - 'src/chronomap/cli.py'
               - 'tests/test_cli.py'

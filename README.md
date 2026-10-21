@@ -62,6 +62,22 @@ Timestamps can be Unix numbers, `datetime` objects, or ISO-8601 strings.
 Expired keys are hidden from reads immediately and are removed lazily on
 access (or by the optional cleanup thread).
 
+For crash recovery, point the map at a write-ahead journal:
+
+```python
+cm = ChronoMap(wal_path="chronomap.wal")
+with cm:
+    cm.put("region", "us-east")
+    cm.put("retries", 3)
+
+recovered = ChronoMap(wal_path="chronomap.wal")
+assert recovered.get("retries") == 3
+```
+
+Records are flushed and fsynced before the in-memory mutation by default
+(`wal_sync=True`). Journals compact into an atomic checkpoint automatically
+at 64 MiB, or whenever you call `cm.checkpoint()`.
+
 ## Documentation
 
 - [`docs/API.md`](docs/API.md) - method-by-method reference for the
@@ -91,6 +107,9 @@ access (or by the optional cleanup thread).
   on demand with `prune_history()` / `prune_all_history()`.
 - **Diff and merge** - compare two maps with `diff()` / `diff_detailed()`
   and combine histories with `merge(strategy=...)`.
+- **Durability** - opt into an append-only, CRC-checked write-ahead journal
+  with crash recovery, atomic checkpoints, and configurable fsync. The sync
+  map supports WAL mode; `AsyncChronoMap` does not yet.
 - **Persistence** - checkpoint with `save_json()`, `save_pickle()`,
   `to_dict()`, and the matching loaders.
 - **Async** - `AsyncChronoMap` is a separate asyncio-native implementation
@@ -103,7 +122,8 @@ access (or by the optional cleanup thread).
 `ChronoMap` is safe to share between threads in one process. It uses a
 reader-writer lock by default, with an `RLock` fallback if you set
 `use_rwlock=False`. It is not process-safe and does not coordinate across
-multiple processes.
+multiple processes. A WAL file must be owned by one live `ChronoMap` at a
+time; it has no cross-process file lock.
 
 `AsyncChronoMap` uses an `asyncio.Lock` and should stay on one event loop.
 Do not share a synchronous map and an async map as if they were the same
@@ -111,10 +131,11 @@ object.
 
 ## What it isn't
 
-- Not a persistent database. `save_json()` and `save_pickle()` exist for
-  checkpointing, but this is an in-memory structure, not a WAL-backed
-  store. JSON saves coerce keys to strings; use pickle when key types
-  matter.
+- Not a database. The optional WAL survives process crashes and torn tail
+  writes for one writer, but the map is still in-memory, has no transactions
+  or replication, and does not coordinate multiple processes. Snapshot
+  helpers (`save_json()`, `save_pickle()`) are separate from the journal.
+  JSON saves coerce keys to strings; use pickle when key types matter.
 - Not process-safe. Thread-safe within one process; for multiprocessing,
   use separate instances and your own IPC.
 - Not built for large-scale analytics. `query()`, `aggregate()`, and
@@ -123,7 +144,7 @@ object.
 
 ## Status
 
-The project has 650+ tests and 100% line coverage across the package.
+The project has 750+ tests and 100% line coverage across the package.
 CI runs the suite on Python 3.8 through 3.13 and checks formatting with
 `black`. Reproduce the coverage locally with:
 
