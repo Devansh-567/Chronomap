@@ -508,6 +508,10 @@ except ChronoMapMemoryError:
     print("memory ceiling reached")
 ```
 
+`AsyncChronoMap` accepts the same `max_memory_mb` option and raises the same
+`ChronoMapMemoryError`. Both maps expose `memory_usage()` / `await
+memory_usage()` for an approximate diagnostics reading.
+
 In a real service, use a limit that reflects the process budget, such as
 `max_memory_mb=64`, and rely on `max_history`, pruning, and TTLs to keep the
 normal working set below it. The monitor is a backstop, not a substitute for

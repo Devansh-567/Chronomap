@@ -44,6 +44,7 @@ jobs:
               - 'src/chronomap/_lock.py'
             memory:
               - 'src/chronomap/_memory.py'
+              - 'tests/test_memory_guardrails.py'
             ttl:
               - 'src/chronomap/_ttl_cleanup.py'
               - 'tests/test_core_correctness.py'
@@ -53,6 +54,7 @@ jobs:
             async_map:
               - 'src/chronomap/asynchronous.py'
               - 'tests/test_async_parity.py'
+              - 'tests/test_memory_guardrails.py'
             persistence:
               - 'src/chronomap/persistence.py'
               - 'src/chronomap/_journal.py'

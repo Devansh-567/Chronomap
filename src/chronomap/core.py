@@ -1479,6 +1479,14 @@ class ChronoMap:
             self._release_read()
         return stats
 
+    def memory_usage(self) -> int:
+        """Approximate bytes used by stored histories and TTL metadata."""
+        self._acquire_read()
+        try:
+            return MemoryMonitor.estimate_size(self._store) + MemoryMonitor.estimate_size(self._ttl)
+        finally:
+            self._release_read()
+
     def reset_stats(self) -> None:
         self._stats = {
             "reads": 0,
