@@ -6,6 +6,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Memory guardrails for `AsyncChronoMap`.** The async constructor now accepts
+  `max_memory_mb` with the same 80% warning and 100% `ChronoMapMemoryError`
+  behavior as the synchronous map. The check covers puts, batch writes,
+  `get_or_set()`/`setdefault()` creation, and merges, and runs after the
+  journal append while the `asyncio.Lock` is held. Both map implementations
+  also expose `memory_usage()` / `await memory_usage()` for an approximate byte
+  count of stored histories and TTL metadata.
 - **Durable write-ahead journal for `ChronoMap`.** `ChronoMap(wal_path=...)`
   replays an append-only WAL on startup, with `wal_sync=True` fsyncing each
   record before the in-memory mutation and `wal_auto_checkpoint_bytes`

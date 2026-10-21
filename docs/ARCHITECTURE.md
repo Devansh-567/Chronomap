@@ -271,14 +271,21 @@ when sharing them.
 frozensets, using `sys.getsizeof()` for each object and a `_seen` set to avoid
 double-counting shared objects and cycles.
 
-When `max_memory_mb` is set:
+Both `ChronoMap(max_memory_mb=...)` and `AsyncChronoMap(max_memory_mb=...)`
+enforce the same rules:
 
 - crossing 80% logs a warning once, until `reset_warning()` is called
 - crossing 100% raises `ChronoMapMemoryError`
 
+The synchronous check runs after the journaled mutation while the writer lock
+is held. The async check does the same under its `asyncio.Lock`, after the
+journal append completes, so a durable write is never silently rolled back by
+a memory trip.
+
 This is a tripwire, not an allocator-level limit. The recursion can miss
 objects held through custom containers, and the estimate is approximate. Use
-it to catch runaway histories, not as a security boundary.
+it to catch runaway histories, not as a security boundary. `memory_usage()`
+exposes the current estimate on both maps for diagnostics.
 
 The monitor runs synchronously in the write path, so very large maps make
 writes more expensive when a ceiling is configured.

@@ -382,6 +382,12 @@ When the cache is enabled, `cache_hits`, `cache_misses`, `cache_size`, and
 `ttl_cleanup_count` is included as well. WAL-backed maps also expose
 `journal_path`, `journal_bytes`, and `journal_sequence`.
 
+#### `memory_usage()`
+
+Returns an approximate byte count for the stored histories and TTL metadata.
+The estimate uses the same recursive walk as `max_memory_mb`; it is intended
+for diagnostics and capacity checks, not exact accounting.
+
 #### `reset_stats()`
 
 Resets counters and clears the read cache.
@@ -742,6 +748,7 @@ AsyncChronoMap(
     wal_path=None,
     wal_sync=True,
     wal_auto_checkpoint_bytes=64 * 1024 * 1024,
+    max_memory_mb=None,
 )
 ```
 
@@ -750,6 +757,11 @@ as on `ChronoMap`, including CRC-checked records, torn-tail recovery, atomic
 checkpoints, and replacement logging from `from_dict()`. Replay runs
 synchronously during construction; journal appends and checkpoints are then
 offloaded to a worker thread. See [Durability](#durability).
+
+`max_memory_mb` applies the same approximate ceiling and warning semantics as
+the synchronous map. The check runs after the journal append and in-memory
+mutation, under the `asyncio.Lock`, so a rejected write is still durable even
+though the call raises `ChronoMapMemoryError`.
 
 ```python
 import asyncio
@@ -795,10 +807,11 @@ Available methods:
 | `on_change(callback)` | Register a sync or async callback. |
 | `subscribe(key, callback)` / `unsubscribe(key, callback)` | Per-key callbacks. |
 | `get_stats()` | Return a copy of the counters. |
+| `await memory_usage()` | Approximate bytes held by histories and TTL metadata. |
 
 The async map mirrors the synchronous surface for history, range queries,
-diff/merge, snapshots, and JSON/pickle persistence. It does not expose the
-synchronous thread-oriented lock/memory options or the archive CLI helpers.
+diff/merge, snapshots, memory guardrails, and JSON/pickle persistence. It does
+not expose the synchronous thread-lock options or the archive CLI helpers.
 
 ## SnapshotContext
 

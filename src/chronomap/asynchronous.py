@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional,
 
 from ._cache import LRUCache
 from ._journal import Journal, JournalCorruptionError, JournalError, read_checkpoint, write_checkpoint
+from ._memory import MemoryMonitor
 from ._version import __version__
 from ._versionlog import insertion_point, range_versions, value_at
 from .exceptions import (
@@ -105,6 +106,9 @@ class AsyncChronoMap:
         wal_auto_checkpoint_bytes: Compact the journal into a checkpoint once
             it grows past this many bytes. None disables automatic
             checkpoints.
+        max_memory_mb: Approximate memory ceiling for stored histories and TTL
+            metadata. Crossing 80% logs a warning; crossing 100% raises
+            ``ChronoMapMemoryError`` after the mutation is journaled.
     """
 
     def __init__(
@@ -117,6 +121,7 @@ class AsyncChronoMap:
         wal_path: Optional[Union[str, Path]] = None,
         wal_sync: bool = True,
         wal_auto_checkpoint_bytes: Optional[int] = 64 * 1024 * 1024,
+        max_memory_mb: Optional[float] = None,
     ) -> None:
         if max_history is not None and (
             isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 1
@@ -139,6 +144,13 @@ class AsyncChronoMap:
             or wal_auto_checkpoint_bytes < 1
         ):
             raise ChronoMapValueError("wal_auto_checkpoint_bytes must be a positive integer or None")
+        if max_memory_mb is not None and (
+            isinstance(max_memory_mb, bool)
+            or not isinstance(max_memory_mb, (int, float))
+            or not math.isfinite(max_memory_mb)
+            or max_memory_mb <= 0
+        ):
+            raise ChronoMapValueError("max_memory_mb must be a positive number or None")
 
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
@@ -147,6 +159,7 @@ class AsyncChronoMap:
         self._debug = debug
         self._max_history = max_history
         self._cache = LRUCache(capacity=cache_size) if cache_size > 0 else None
+        self._memory_monitor = MemoryMonitor(max_memory_mb)
         self._change_callbacks: List[Callable] = []
         self._key_subscribers: Dict[Any, List[Callable]] = {}
         self._stats = {
@@ -625,6 +638,7 @@ class AsyncChronoMap:
             self._auto_prune(key)
             if self._cache:
                 self._cache.invalidate(key)
+            self._memory_monitor.check_memory(self._store, self._ttl)
             await self._maybe_checkpoint()
             self._stats["writes"] += 1
 
@@ -680,6 +694,7 @@ class AsyncChronoMap:
                     self._cache.invalidate(key)
                 events.append((key, old_value, value, ts))
 
+            self._memory_monitor.check_memory(self._store, self._ttl)
             await self._maybe_checkpoint()
             self._stats["writes"] += len(keys)
 
@@ -822,6 +837,7 @@ class AsyncChronoMap:
             self._auto_prune(key)
             if self._cache:
                 self._cache.invalidate(key)
+            self._memory_monitor.check_memory(self._store, self._ttl)
             await self._maybe_checkpoint()
             self._stats["writes"] += 1
 
@@ -863,6 +879,7 @@ class AsyncChronoMap:
                 self._ttl[key] = expires_at
             if self._cache:
                 self._cache.invalidate(key)
+            self._memory_monitor.check_memory(self._store, self._ttl)
             await self._maybe_checkpoint()
             self._stats["writes"] += 1
             created = True
@@ -1364,6 +1381,7 @@ class AsyncChronoMap:
 
             if self._cache:
                 self._cache.clear()
+            self._memory_monitor.check_memory(self._store, self._ttl)
             await self._maybe_checkpoint()
 
     async def clear(self) -> None:
@@ -1400,6 +1418,11 @@ class AsyncChronoMap:
         stats["total_versions"] = sum(len(versions) for versions in self._store.values())
         stats["expired_keys"] = sum(1 for key in self._ttl if self._is_expired(key))
         return stats
+
+    async def memory_usage(self) -> int:
+        """Approximate bytes used by stored histories and TTL metadata."""
+        async with self._lock:
+            return MemoryMonitor.estimate_size(self._store) + MemoryMonitor.estimate_size(self._ttl)
 
     def reset_stats(self) -> None:
         """Zero operation counters and the read cache."""

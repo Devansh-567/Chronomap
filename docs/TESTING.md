@@ -54,7 +54,7 @@ Run with the coverage report used by CI:
 pytest tests/ --cov=chronomap --cov-report=term-missing
 ```
 
-The current `main` branch collects **828 tests** and reports **100% statement
+The current `main` branch collects **842 tests** and reports **100% statement
 coverage**. The numbers will grow as features are added; the expectation is
 that new behavior comes with tests and does not lower coverage.
 
@@ -97,6 +97,7 @@ pytest tests/test_basic.py::test_time_travel -vv
 | `tests/test_wal_crash.py` | Subprocess writers that call `os._exit()` immediately after a write and after a checkpoint, then verify recovery. |
 | `tests/test_wal_lock.py` | Cross-process WAL ownership: sync/async contention, checkpoint-safe locks, subprocess holders, crash release, and failed-open cleanup. |
 | `tests/test_pickle_fallback.py` | Compressed pickle loading when the raw file cannot be parsed as a pickle, for both map implementations. |
+| `tests/test_memory_guardrails.py` | Async memory ceilings, memory-usage reporting, and parity across every guarded write path. |
 | `tests/test_module_entry.py` | Importing the `chronomap.__main__` entrypoint. |
 
 Tests use pytest fixtures such as `tmp_path` and `capsys`, not a project-wide
@@ -112,10 +113,10 @@ and makes ordering irrelevant.
 | `core` | Core read/write/query/merge/history behavior | 269 |
 | `cache` | `LRUCache` behavior | 10 |
 | `lock` | `RWLock` and concurrency behavior | 5 |
-| `memory` | Memory monitor and size estimation | 8 |
+| `memory` | Memory monitor and size estimation | 22 |
 | `ttl` | TTL expiry and cleanup thread | 55 |
 | `snapshot` | Snapshot, rollback, and diff | 23 |
-| `async_map` | `AsyncChronoMap` behavior | 163 |
+| `async_map` | `AsyncChronoMap` behavior | 176 |
 | `cli` | CLI behavior | 81 |
 | `persistence` | Archive, codec, and WAL behavior | 181 |
 | `query` | Fluent value and version queries | 73 |
