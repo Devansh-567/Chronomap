@@ -1060,23 +1060,26 @@ class AsyncChronoMap:
         """Timestamp recorded when this map was created by snapshot()."""
         return self._snapshot_time
 
+    async def iter_rows(self) -> AsyncIterator[Dict[str, Any]]:
+        """Stream one row per live version without holding the lock across yields."""
+        async with self._lock:
+            snapshot = [
+                (key, list(versions)) for key, versions in self._store.items() if not self._is_expired(key)
+            ]
+
+        for key, versions in snapshot:
+            for version_idx, (ts, value) in enumerate(versions):
+                yield {
+                    "key": key,
+                    "value": value,
+                    "timestamp": ts,
+                    "datetime": datetime.fromtimestamp(ts),
+                    "version": version_idx,
+                }
+
     async def to_dataframe(self):
         """Export live history to a pandas DataFrame without blocking the loop."""
-        rows = []
-        async with self._lock:
-            for key, versions in self._store.items():
-                if self._is_expired(key):
-                    continue
-                for version_idx, (ts, value) in enumerate(versions):
-                    rows.append(
-                        {
-                            "key": key,
-                            "value": value,
-                            "timestamp": ts,
-                            "datetime": datetime.fromtimestamp(ts),
-                            "version": version_idx,
-                        }
-                    )
+        rows = [row async for row in self.iter_rows()]
 
         def build():
             try:
