@@ -10,7 +10,6 @@ for the asyncio version.
 
 from __future__ import annotations
 
-import bisect
 import bz2
 import gzip
 import heapq
@@ -33,6 +32,7 @@ from ._memory import MemoryMonitor
 from ._snapshot import SnapshotContext
 from ._ttl_cleanup import TTLCleanupThread
 from ._version import __version__
+from ._versionlog import insertion_point, range_versions, value_at
 from .exceptions import (
     ChronoMapKeyError,
     ChronoMapTypeError,
@@ -220,7 +220,7 @@ class ChronoMap:
         versions = self._store.get(key, [])
         if len(versions) > self._max_history:
             removed = len(versions) - self._max_history
-            self._store[key] = versions[-self._max_history :]
+            del versions[:removed]
             self._stats["auto_prunes"] += 1
             if self._cache:
                 self._cache.invalidate(key)
@@ -259,12 +259,7 @@ class ChronoMap:
         if not versions:
             return False, None
 
-        times = [v[0] for v in versions]
-        idx = bisect.bisect_right(times, ts) - 1
-        if idx < 0:
-            return False, None
-
-        return True, versions[idx][1]
+        return value_at(versions, ts)
 
     def _get_unlocked(
         self,
@@ -361,8 +356,7 @@ class ChronoMap:
             if not versions or ts >= versions[-1][0]:
                 versions.append((ts, value))
             else:
-                times = [v[0] for v in versions]
-                idx = bisect.bisect_right(times, ts)
+                idx = insertion_point(versions, ts)
                 versions.insert(idx, (ts, value))
 
             if ttl is not None:
@@ -779,8 +773,7 @@ class ChronoMap:
                 if not versions or ts >= versions[-1][0]:
                     versions.append((ts, value))
                 else:
-                    times = [v[0] for v in versions]
-                    idx = bisect.bisect_right(times, ts)
+                    idx = insertion_point(versions, ts)
                     versions.insert(idx, (ts, value))
 
                 if ttl is not None:
@@ -867,7 +860,7 @@ class ChronoMap:
             if start > end:
                 return []
 
-            result = [(ts, val) for ts, val in versions if start <= ts <= end]
+            result = range_versions(versions, start, end)
             logger.debug("GET_RANGE key=%r found %d entries", key, len(result))
             return result
         finally:
@@ -888,8 +881,7 @@ class ChronoMap:
                 if versions:
                     ts, val = versions[-1]
                     latest_items.append((key, ts, val))
-            latest_items.sort(key=lambda x: x[1], reverse=True)
-            result = latest_items[:n]
+            result = heapq.nlargest(n, latest_items, key=lambda item: item[1])
             logger.debug("GET_LATEST_KEYS returning %d keys", len(result))
             return result
         finally:

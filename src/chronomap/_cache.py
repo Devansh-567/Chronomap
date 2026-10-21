@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 
 class LRUCache:
@@ -21,6 +21,7 @@ class LRUCache:
     def __init__(self, capacity: int = 1000) -> None:
         self.capacity = capacity
         self.cache: "OrderedDict[Tuple[Any, Optional[float]], Any]" = OrderedDict()
+        self._keys_by_store_key: Dict[Any, Set[Tuple[Any, Optional[float]]]] = {}
         self.lock = threading.Lock()
         self.hits = 0
         self.misses = 0
@@ -38,20 +39,28 @@ class LRUCache:
         with self.lock:
             if key in self.cache:
                 self.cache.move_to_end(key)
+            else:
+                self._keys_by_store_key.setdefault(key[0], set()).add(key)
             self.cache[key] = value
             if len(self.cache) > self.capacity:
-                self.cache.popitem(last=False)
+                evicted_key, _ = self.cache.popitem(last=False)
+                store_key = evicted_key[0]
+                bucket = self._keys_by_store_key.get(store_key)
+                if bucket is not None:
+                    bucket.discard(evicted_key)
+                    if not bucket:
+                        del self._keys_by_store_key[store_key]
 
     def invalidate(self, store_key: Any) -> None:
         """Drop every cached entry belonging to a given store key."""
         with self.lock:
-            stale = [k for k in self.cache if k[0] == store_key]
-            for k in stale:
-                del self.cache[k]
+            for cache_key in self._keys_by_store_key.pop(store_key, set()):
+                self.cache.pop(cache_key, None)
 
     def clear(self) -> None:
         with self.lock:
             self.cache.clear()
+            self._keys_by_store_key.clear()
             self.hits = 0
             self.misses = 0
 

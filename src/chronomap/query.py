@@ -23,7 +23,6 @@ Examples::
 
 from __future__ import annotations
 
-import bisect
 import fnmatch
 import math
 import re
@@ -32,6 +31,7 @@ from datetime import datetime
 from statistics import mean, median
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
+from ._versionlog import range_versions, value_at
 from .core import ChronoMap
 from .exceptions import ChronoMapTypeError, ChronoMapValueError
 
@@ -84,10 +84,9 @@ def _snapshot(cm: ChronoMap, timestamp: float) -> Dict[Any, Any]:
         for key, versions in cm._store.items():
             if cm._is_expired(key):
                 continue
-            times = [version[0] for version in versions]
-            index = bisect.bisect_right(times, timestamp) - 1
-            if index >= 0:
-                values[key] = versions[index][1]
+            found, value = value_at(versions, timestamp)
+            if found:
+                values[key] = value
     finally:
         cm._release_read()
     return values
@@ -202,9 +201,20 @@ class Query:
 
     def values_in(self, values: Iterable[Any]) -> "Query":
         candidates = list(values)
-        return self._with_op(
-            lambda items: [pair for pair in items if any(pair[1] == candidate for candidate in candidates)]
-        )
+        try:
+            allowed = set(candidates)
+        except TypeError:
+            allowed = None
+
+        def matches(value: Any) -> bool:
+            if allowed is not None:
+                try:
+                    return value in allowed
+                except TypeError:
+                    pass
+            return any(value == candidate for candidate in candidates)
+
+        return self._with_op(lambda items: [pair for pair in items if matches(pair[1])])
 
     def values_between(self, low: Any, high: Any, *, inclusive: bool = True) -> "Query":
         def op(items: List[Item]) -> List[Item]:
@@ -280,12 +290,20 @@ class Query:
 
     def distinct(self) -> "Query":
         def op(items: List[Item]) -> List[Item]:
-            seen: List[Any] = []
+            seen_hashable = set()
+            seen_unhashable: List[Any] = []
             unique: List[Item] = []
             for pair in items:
-                if not any(pair[1] == existing for existing in seen):
-                    seen.append(pair[1])
-                    unique.append(pair)
+                value = pair[1]
+                try:
+                    if value in seen_hashable:
+                        continue
+                    seen_hashable.add(value)
+                except TypeError:
+                    if any(value == existing for existing in seen_unhashable):
+                        continue
+                    seen_unhashable.append(value)
+                unique.append(pair)
             return unique
 
         return self._with_op(op)
@@ -444,9 +462,9 @@ class VersionQuery:
                     continue
                 if source._is_expired(key):
                     continue
-                for timestamp, value in versions:
-                    if start_ts <= timestamp <= end_ts:
-                        rows.append((key, timestamp, value))
+                rows.extend(
+                    (key, timestamp, value) for timestamp, value in range_versions(versions, start_ts, end_ts)
+                )
         finally:
             source._release_read()
 
