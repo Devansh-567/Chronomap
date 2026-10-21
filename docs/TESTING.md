@@ -54,7 +54,7 @@ Run with the coverage report used by CI:
 pytest tests/ --cov=chronomap --cov-report=term-missing
 ```
 
-The current `main` branch collects **653 tests** and reports **100% statement
+The current `main` branch collects **818 tests** and reports **100% statement
 coverage**. The numbers will grow as features are added; the expectation is
 that new behavior comes with tests and does not lower coverage.
 
@@ -86,6 +86,8 @@ pytest tests/test_basic.py::test_time_travel -vv
 | `tests/test_coverage_gaps.py` | Edge and defensive branches: cache eviction, lock ordering, memory estimate edge cases, cleanup-thread lifecycle, strict reads, invalid inputs, expiry races, merge TTLs, async validation, and CLI entry paths. |
 | `tests/test_core_correctness.py` | Regression coverage for validation, batch operations, delete/prune semantics, callback behavior, locking, serialization, and merge/diff edge cases. |
 | `tests/test_async_parity.py` | `AsyncChronoMap` parity: validation, cache, batch/conditional operations, history, TTL, snapshots, callbacks, stats, and persistence. |
+| `tests/test_async_wal.py` | `AsyncChronoMap` WAL integration: replay of every mutation, TTL purge recovery, checkpoints, auto-checkpoint failures, torn tails, corruption, `from_dict()` replacement, close/destructor behavior, and subprocess crash recovery. |
+| `tests/test_async_serialization_validation.py` | Async `from_dict()` validation for timestamps, sorted histories, TTL deadlines, snapshot time, and normalization. |
 | `tests/test_cli.py` | CLI parsing, formatting, color helpers, and file display. |
 | `tests/test_cli_commands.py` | Expanded CLI commands: show/get/history/put/delete/keys/stats/prune/diff/merge, JSON output, and file handling. |
 | `tests/test_persistence.py` | Archive formats, typed JSON codec, pickle, compression, inspection, TTL preservation, and corruption handling. |
@@ -111,9 +113,9 @@ and makes ordering irrelevant.
 | `memory` | Memory monitor and size estimation | 8 |
 | `ttl` | TTL expiry and cleanup thread | 55 |
 | `snapshot` | Snapshot, rollback, and diff | 23 |
-| `async_map` | `AsyncChronoMap` behavior | 115 |
+| `async_map` | `AsyncChronoMap` behavior | 162 |
 | `cli` | CLI behavior | 81 |
-| `persistence` | Archive, codec, and WAL behavior | 134 |
+| `persistence` | Archive, codec, and WAL behavior | 171 |
 | `query` | Fluent value and version queries | 73 |
 
 These are selection sizes, not a partition: markers drive the CI subsystem
@@ -136,9 +138,8 @@ source files to `core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
 ## Async tests
 
 `pytest-asyncio` is installed and `asyncio_mode = "auto"` is set in
-`pyproject.toml`. The existing async tests still use explicit
-`@pytest.mark.asyncio` markers, which works in auto mode and makes the intent
-obvious.
+`pyproject.toml`. Async tests may also use explicit `@pytest.mark.asyncio`
+markers; that works in auto mode and makes the intent obvious.
 
 ```python
 import pytest

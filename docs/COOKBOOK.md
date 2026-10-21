@@ -152,7 +152,32 @@ The journal automatically compacts into an atomic checkpoint at 64 MiB. Tune
 that with `wal_auto_checkpoint_bytes`, disable it with `None`, or call
 `checkpoint()` explicitly. Use one live map per WAL path: there is no
 cross-process file lock, and journals/checkpoints use trusted pickle data.
-`AsyncChronoMap` does not support WAL mode yet.
+
+`AsyncChronoMap` takes the same WAL arguments and moves append, checkpoint, and
+close operations off the event loop:
+
+```python
+import asyncio
+
+from chronomap import AsyncChronoMap
+
+
+async def main():
+    async with AsyncChronoMap(wal_path="chronomap.wal") as state:
+        await state.put("region", "us-east")
+        await state.put("retries", 3)
+        await state.checkpoint()
+
+    recovered = AsyncChronoMap(wal_path="chronomap.wal")
+    try:
+        assert await recovered.get("region") == "us-east"
+        assert await recovered.get("retries") == 3
+    finally:
+        await recovered.aclose()
+
+
+asyncio.run(main())
+```
 
 ## Save and restore a map
 

@@ -12,7 +12,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   compacting into an atomic checkpoint (default 64 MiB). New `checkpoint()`,
   `close()`, and context-manager support; recovery discards a torn tail and
   rejects complete records that fail CRC or sequence validation.
-  `AsyncChronoMap` does not support WAL mode yet.
+- **WAL support for `AsyncChronoMap`.** The async map accepts the same
+  `wal_path`, `wal_sync`, and `wal_auto_checkpoint_bytes` options, replays
+  checkpoints and journals during construction, and journals every mutation,
+  expired-key purge, rollback, merge, clear, and `from_dict()` replacement.
+  Journal appends, checkpoint writes, and close run in the default executor
+  while the `asyncio.Lock` preserves ordering. New `await checkpoint()`,
+  `await aclose()`, and `async with` lifecycle support. Async `from_dict()`
+  now validates version timestamps, sorted histories, TTL deadlines, and
+  `snapshot_time` like the synchronous implementation.
+- `tests/test_async_wal.py` and `tests/test_async_serialization_validation.py`
+  cover replay of every async mutation, TTL purge recovery, checkpoints,
+  auto-checkpoint failures, torn tails, corrupt journals/checkpoints,
+  `from_dict()` replacement/failure paths, closed-journal behavior, stats,
+  destructor safety, and abrupt subprocess exits with and without a
+  checkpoint.
 - `Journal`, `JournalError`, and `JournalCorruptionError` exports for callers
   that need the CRC-framed record layer directly.
 - Checkpoint files are length- and CRC32-framed; truncated, extended, or
@@ -31,7 +45,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `tests/test_module_entry.py` cover framing, checksums, torn writes,
   checkpoints, replay of every mutation, TTL expiry edge cases, WAL
   validation, abrupt process exits with and without a checkpoint,
-  close/destructor behavior, and the `__main__` entrypoint.
+  close/destructor behavior, and the `__main__` entrypoint. Async WAL and
+  serialization-validation coverage lives in `tests/test_async_wal.py` and
+  `tests/test_async_serialization_validation.py`.
 - Pytest markers (`core`, `cache`, `lock`, `memory`, `ttl`, `snapshot`,
   `async_map`, `cli`) applied across the whole test suite, so each
   subsystem's tests can be run and reported on independently

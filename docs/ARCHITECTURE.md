@@ -21,8 +21,8 @@ It deliberately does not provide:
 - multi-process coordination over a WAL
 - automatic schema migration
 
-Persistence is whole-map snapshot serialization, not a database. The
-synchronous map can opt into a single-writer write-ahead log for crash
+Persistence is whole-map snapshot serialization, not a database. Both map
+implementations can opt into a single-writer write-ahead log for crash
 recovery, but ChronoMap is still in-memory and does not coordinate multiple
 processes. If you need a durable multi-process store, use a database and keep
 ChronoMap as a time-indexed cache or projection.
@@ -32,7 +32,7 @@ ChronoMap as a time-indexed cache or projection.
 | Module | Responsibility |
 | --- | --- |
 | `src/chronomap/core.py` | `ChronoMap`: storage, reads, writes, history, TTL, pruning, diff/merge, persistence helpers. |
-| `src/chronomap/asynchronous.py` | `AsyncChronoMap`: separate asyncio-native implementation. |
+| `src/chronomap/asynchronous.py` | `AsyncChronoMap`: separate asyncio-native implementation, including WAL integration. |
 | `src/chronomap/_lock.py` | `RWLock`: readers-writer lock used by the sync map. |
 | `src/chronomap/_cache.py` | `LRUCache`: thread-safe cache for reads at a `(key, timestamp)` pair. |
 | `src/chronomap/_memory.py` | `MemoryMonitor`: approximate recursive size estimate and optional ceiling. |
@@ -188,6 +188,15 @@ Async callbacks may be plain functions or coroutine functions. The map awaits
 coroutine callbacks after releasing its lock for writes, so a callback may
 perform further awaits without deadlocking the map.
 
+With `wal_path` enabled, the constructor replays the checkpoint and journal
+synchronously. After construction, journal appends, checkpoint writes, and
+closing the journal run through the default executor while the map holds its
+`asyncio.Lock`. That preserves record order relative to in-memory mutations
+without blocking the event loop. An auto-checkpoint failure is logged and
+leaves the journal intact instead of failing the write. `aclose()` cancels
+the optional cleanup task and closes the journal; `__del__` closes the journal
+as a fallback.
+
 The async map must be used from one event loop. It is not thread-safe and is
 not a drop-in replacement for `ChronoMap` in a threaded program.
 
@@ -311,8 +320,10 @@ If that matters, prune or compare before merging.
 
 ## Durability
 
-Durability is opt-in through `ChronoMap(wal_path=...)`. The synchronous map
-uses `_journal.py`; `AsyncChronoMap` does not have a WAL implementation.
+Durability is opt-in through `ChronoMap(wal_path=...)` or
+`AsyncChronoMap(wal_path=...)`. Both use the same `_journal.py` record layer,
+checkpoint format, and replay rules; only the locking and I/O scheduling
+around them differ.
 
 ### Journal format
 
@@ -342,7 +353,9 @@ file first. The records cover puts, deletes, TTL changes, pruning, merges,
 rollbacks, and clears. Expired-key purges and background cleanup are logged
 too, so replay does not accidentally resurrect an expired TTL on a later
 write. The in-memory write lock is held across journal append and mutation, so
-records from concurrent writers are ordered consistently.
+records from concurrent writers are ordered consistently. The synchronous map
+uses its writer lock; the async map uses its `asyncio.Lock` and offloads file
+I/O to the default executor while that lock is held.
 
 ### Checkpoints and recovery
 
@@ -359,9 +372,9 @@ Automatic checkpoints default to every 64 MiB of journal and never turn a
 failed compaction into a failed user write.
 
 WAL-backed maps are single-writer: there is no file lock stopping two
-processes from opening the same path. Closing the map stops the TTL thread and
-the journal. The whole-map JSON/pickle persistence helpers are separate from
-the WAL.
+processes from opening the same path. Closing a synchronous map stops the TTL
+thread and the journal; `await aclose()` does the equivalent for an async map.
+The whole-map JSON/pickle persistence helpers are separate from the WAL.
 
 ## Persistence
 
@@ -375,7 +388,7 @@ Whole-map persistence is implemented in `core.py`:
 The stored payload contains `store`, `ttl`, `snapshot_time`, `version`, and
 `max_history`. Version metadata is written for diagnostics; loading does not
 currently run migrations. Passing `wal_path` to `from_dict()` also logs the
-imported state as a replacement record.
+imported state as a replacement record for both map implementations.
 
 JSON cannot represent non-string keys. `save_json()` coerces keys with
 `str()`, so loading a JSON file can change key identity. Pickle preserves key
@@ -434,7 +447,8 @@ and type checking alongside the tests.
 - The memory estimate is approximate.
 - Callbacks run inline in the writer's execution path.
 - The async implementation has a smaller API surface than the sync map.
-- WAL mode is synchronous-only; `AsyncChronoMap` replays nothing on startup.
+- Async WAL replay runs synchronously during construction; a very large
+  journal blocks the event loop until replay finishes.
 - WAL recovery loads all journal records into memory before applying them.
 - WAL checkpoints rewrite the whole store and TTL table.
 - One live process must own a WAL path; there is no file lock.

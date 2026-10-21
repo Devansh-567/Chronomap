@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from ._cache import LRUCache
+from ._journal import Journal, JournalCorruptionError, JournalError, read_checkpoint, write_checkpoint
 from ._version import __version__
 from ._versionlog import insertion_point, range_versions, value_at
 from .exceptions import (
@@ -95,6 +96,15 @@ class AsyncChronoMap:
             write. Defaults to False because a task created in ``__init__``
             would outlive maps built outside an event loop.
         ttl_cleanup_interval: Seconds between cleanup passes.
+        wal_path: Enable a durable write-ahead journal at this path. State is
+            replayed synchronously from the journal and checkpoint on
+            construction.
+        wal_sync: Flush and fsync every journal record in a worker thread.
+            Disable only when losing the most recent writes on a crash is
+            acceptable.
+        wal_auto_checkpoint_bytes: Compact the journal into a checkpoint once
+            it grows past this many bytes. None disables automatic
+            checkpoints.
     """
 
     def __init__(
@@ -104,6 +114,9 @@ class AsyncChronoMap:
         cache_size: int = 1000,
         enable_ttl_cleanup: bool = False,
         ttl_cleanup_interval: float = 60.0,
+        wal_path: Optional[Union[str, Path]] = None,
+        wal_sync: bool = True,
+        wal_auto_checkpoint_bytes: Optional[int] = 64 * 1024 * 1024,
     ) -> None:
         if max_history is not None and (
             isinstance(max_history, bool) or not isinstance(max_history, int) or max_history < 1
@@ -118,6 +131,14 @@ class AsyncChronoMap:
             or ttl_cleanup_interval <= 0
         ):
             raise ChronoMapValueError("ttl_cleanup_interval must be a positive number")
+        if not isinstance(wal_sync, bool):
+            raise ChronoMapValueError("wal_sync must be a boolean")
+        if wal_auto_checkpoint_bytes is not None and (
+            isinstance(wal_auto_checkpoint_bytes, bool)
+            or not isinstance(wal_auto_checkpoint_bytes, int)
+            or wal_auto_checkpoint_bytes < 1
+        ):
+            raise ChronoMapValueError("wal_auto_checkpoint_bytes must be a positive integer or None")
 
         self._store: Dict[Any, List[Tuple[float, Any]]] = {}
         self._ttl: Dict[Any, float] = {}
@@ -137,6 +158,18 @@ class AsyncChronoMap:
             "cache_hits": 0,
             "cache_misses": 0,
         }
+
+        self._wal: Optional[Journal] = None
+        self._wal_auto_checkpoint_bytes = wal_auto_checkpoint_bytes
+        if wal_path is not None:
+            try:
+                self._wal = Journal(Path(wal_path), sync=wal_sync)
+                self._replay_journal()
+            except BaseException:
+                if self._wal is not None:
+                    self._wal.close()
+                raise
+
         self._enable_ttl_cleanup = enable_ttl_cleanup
         self._ttl_cleanup_interval = float(ttl_cleanup_interval)
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -150,6 +183,14 @@ class AsyncChronoMap:
                 logger.addHandler(handler)
 
     # -- lifecycle ----------------------------------------------------------
+
+    def __del__(self) -> None:
+        journal = getattr(self, "_wal", None)
+        if journal is not None:
+            try:
+                journal.close()
+            except Exception:
+                pass
 
     def _ensure_cleanup_task(self) -> None:
         if not self._enable_ttl_cleanup:
@@ -177,13 +218,16 @@ class AsyncChronoMap:
             task.cancel()
 
     async def aclose(self) -> None:
-        """Cancel and await the cleanup task; safe to call more than once."""
+        """Cancel cleanup and close the journal; safe to call more than once."""
         task = self._cleanup_task
         self._cleanup_task = None
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        async with self._lock:
+            if self._wal is not None:
+                await self._run_blocking(self._wal.close)
 
     async def __aenter__(self) -> "AsyncChronoMap":
         self._ensure_cleanup_task()
@@ -197,6 +241,218 @@ class AsyncChronoMap:
 
     def _current_time(self) -> float:
         return datetime.now(timezone.utc).timestamp()
+
+    # -- write-ahead journal ------------------------------------------------
+
+    async def _journal_append(self, operation: str, data: Dict[str, Any]) -> None:
+        if self._wal is not None:
+            await self._run_blocking(self._wal.append, operation, data)
+
+    def _journal_checkpoint_path(self) -> Path:
+        if self._wal is None:
+            raise JournalError("WAL is not enabled")
+        return Path(str(self._wal.path) + ".checkpoint")
+
+    def _checkpoint_unlocked(self) -> None:
+        if self._wal is None:
+            raise JournalError("WAL is not enabled")
+        if self._wal.closed:
+            raise JournalError("Journal is closed")
+        state = {
+            "sequence": self._wal.sequence,
+            "store": deepcopy(self._store),
+            "ttl": deepcopy(self._ttl),
+            "snapshot_time": self._snapshot_time,
+            "max_history": self._max_history,
+        }
+        write_checkpoint(self._journal_checkpoint_path(), state)
+        self._wal.reset()
+
+    async def checkpoint(self) -> None:
+        """Write a durable checkpoint and truncate the journal."""
+        async with self._lock:
+            await self._run_blocking(self._checkpoint_unlocked)
+
+    def _maybe_checkpoint_unlocked(self) -> None:
+        if (
+            self._wal is not None
+            and self._wal_auto_checkpoint_bytes is not None
+            and self._wal.size >= self._wal_auto_checkpoint_bytes
+        ):
+            try:
+                self._checkpoint_unlocked()
+            except Exception as exc:
+                logger.warning("WAL auto-checkpoint failed; keeping journal: %s", exc)
+
+    async def _maybe_checkpoint(self) -> None:
+        if (
+            self._wal is not None
+            and self._wal_auto_checkpoint_bytes is not None
+            and self._wal.size >= self._wal_auto_checkpoint_bytes
+        ):
+            try:
+                await self._run_blocking(self._checkpoint_unlocked)
+            except Exception as exc:
+                logger.warning("WAL auto-checkpoint failed; keeping journal: %s", exc)
+
+    def _apply_journal_put(
+        self,
+        key: Any,
+        value: Any,
+        timestamp: Any,
+        expires_at: Any,
+    ) -> None:
+        if (
+            isinstance(timestamp, bool)
+            or not isinstance(timestamp, (int, float))
+            or not math.isfinite(timestamp)
+        ):
+            raise JournalCorruptionError("Journal contains an invalid timestamp")
+        if expires_at is not None and (
+            isinstance(expires_at, bool)
+            or not isinstance(expires_at, (int, float))
+            or not math.isfinite(expires_at)
+        ):
+            raise JournalCorruptionError("Journal contains an invalid TTL deadline")
+        ts = float(timestamp)
+        versions = self._store.setdefault(key, [])
+        if not versions or ts >= versions[-1][0]:
+            versions.append((ts, value))
+        else:
+            versions.insert(insertion_point(versions, ts), (ts, value))
+        if expires_at is not None:
+            self._ttl[key] = float(expires_at)
+        self._auto_prune(key)
+        self._stats["writes"] += 1
+
+    def _apply_journal_record(self, operation: str, data: Dict[str, Any]) -> None:
+        if operation == "put":
+            self._apply_journal_put(
+                data["key"],
+                data["value"],
+                data["timestamp"],
+                data.get("expires_at"),
+            )
+        elif operation == "put_many":
+            for key, value in data["items"]:
+                self._apply_journal_put(key, value, data["timestamp"], data.get("expires_at"))
+        elif operation == "delete":
+            key = data["key"]
+            if self._store.pop(key, None) is not None:
+                self._stats["deletes"] += 1
+            self._ttl.pop(key, None)
+        elif operation == "delete_many":
+            for key in data["keys"]:
+                if self._store.pop(key, None) is not None:
+                    self._stats["deletes"] += 1
+                self._ttl.pop(key, None)
+        elif operation == "persist":
+            self._ttl.pop(data["key"], None)
+        elif operation == "prune":
+            key = data["key"]
+            versions = self._store.get(key)
+            if versions is None:
+                return
+            keep_last = data.get("keep_last")
+            cutoff = data.get("cutoff")
+            if keep_last is not None:
+                if isinstance(keep_last, bool) or not isinstance(keep_last, int) or keep_last < 0:
+                    raise JournalCorruptionError("Journal contains an invalid prune count")
+                if keep_last == 0:
+                    versions.clear()
+                else:
+                    versions[:] = versions[-keep_last:]
+            if cutoff is not None:
+                if (
+                    isinstance(cutoff, bool)
+                    or not isinstance(cutoff, (int, float))
+                    or not math.isfinite(cutoff)
+                ):
+                    raise JournalCorruptionError("Journal contains an invalid prune cutoff")
+                versions[:] = [(ts, value) for ts, value in versions if ts >= cutoff]
+            if not versions:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+        elif operation == "clear":
+            self._store.clear()
+            self._ttl.clear()
+            if self._cache:
+                self._cache.clear()
+        elif operation == "replace":
+            store = data["store"]
+            ttl = data["ttl"]
+            if not isinstance(store, dict) or not isinstance(ttl, dict):
+                raise JournalCorruptionError("Journal contains an invalid replacement state")
+            self._store = store
+            self._ttl = ttl
+            if data.get("restore_snapshot_time", False):
+                self._snapshot_time = data.get("snapshot_time")
+            if self._cache:
+                self._cache.clear()
+        elif operation == "merge":
+            other_store = data["other_store"]
+            other_ttl = data["other_ttl"]
+            strategy = data["strategy"]
+            if not isinstance(other_store, dict) or not isinstance(other_ttl, dict):
+                raise JournalCorruptionError("Journal contains an invalid merge state")
+            if strategy == "timestamp":
+                for key, other_versions in other_store.items():
+                    target_versions = self._store.get(key, [])
+                    if other_versions:
+                        self._store[key] = list(
+                            heapq.merge(target_versions, other_versions, key=lambda item: item[0])
+                        )
+                    self._auto_prune(key)
+                    self._stats["writes"] += len(other_versions)
+                for key, expiry in other_ttl.items():
+                    if key not in self._ttl or expiry > self._ttl[key]:
+                        self._ttl[key] = expiry
+            elif strategy == "overwrite":
+                for key, versions in other_store.items():
+                    self._store[key] = versions
+                    self._auto_prune(key)
+                    self._stats["writes"] += len(versions)
+                for key, expiry in other_ttl.items():
+                    self._ttl[key] = expiry
+            else:
+                raise JournalCorruptionError("Journal contains an invalid merge strategy")
+            if self._cache:
+                self._cache.clear()
+        else:
+            raise JournalCorruptionError(f"Unknown journal operation: {operation!r}")
+
+    def _replay_journal(self) -> None:
+        if self._wal is None:
+            return
+        checkpoint_sequence = 0
+        checkpoint_path = self._journal_checkpoint_path()
+        if checkpoint_path.exists():
+            state = read_checkpoint(checkpoint_path)
+            sequence = state.get("sequence")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+                raise JournalCorruptionError("Checkpoint contains an invalid sequence number")
+            store = state.get("store")
+            ttl = state.get("ttl")
+            if not isinstance(store, dict) or not isinstance(ttl, dict):
+                raise JournalCorruptionError("Checkpoint contains an invalid state")
+            self._store = store
+            self._ttl = ttl
+            self._snapshot_time = state.get("snapshot_time")
+            checkpoint_sequence = sequence
+
+        for sequence, operation, data in self._wal.records:
+            if sequence <= checkpoint_sequence:
+                continue
+            try:
+                self._apply_journal_record(operation, data)
+            except JournalCorruptionError:
+                raise
+            except Exception as exc:
+                raise JournalCorruptionError(
+                    f"Could not replay journal record {sequence} ({operation!r})"
+                ) from exc
+        self._wal.advance_to(checkpoint_sequence)
+        self._wal.clear_records()
 
     def _parse_timestamp(self, timestamp: Union[float, str, datetime]) -> float:
         if isinstance(timestamp, bool):
@@ -243,12 +499,14 @@ class AsyncChronoMap:
             return False
         return self._current_time() >= self._ttl[key]
 
-    def _purge_if_expired(self, key: Any) -> None:
+    async def _purge_if_expired(self, key: Any) -> None:
         if self._is_expired(key):
+            await self._journal_append("delete", {"key": key})
             self._store.pop(key, None)
             self._ttl.pop(key, None)
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
 
     def _lookup_unlocked(self, key: Any, ts: float) -> Tuple[bool, Any]:
         if self._is_expired(key):
@@ -338,10 +596,21 @@ class AsyncChronoMap:
         self._ensure_cleanup_task()
 
         async with self._lock:
-            self._purge_if_expired(key)
+            await self._purge_if_expired(key)
             old_value = None
             if key in self._store and self._store[key]:
                 old_value = self._store[key][-1][1]
+
+            expires_at = self._current_time() + ttl if ttl is not None else None
+            await self._journal_append(
+                "put",
+                {
+                    "key": key,
+                    "value": value,
+                    "timestamp": ts,
+                    "expires_at": expires_at,
+                },
+            )
 
             versions = self._store.setdefault(key, [])
             if not versions or ts >= versions[-1][0]:
@@ -350,12 +619,13 @@ class AsyncChronoMap:
                 idx = insertion_point(versions, ts)
                 versions.insert(idx, (ts, value))
 
-            if ttl is not None:
-                self._ttl[key] = self._current_time() + ttl
+            if expires_at is not None:
+                self._ttl[key] = expires_at
 
             self._auto_prune(key)
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             self._stats["writes"] += 1
 
         await self._fire_callbacks(key, old_value, value, ts)
@@ -378,9 +648,19 @@ class AsyncChronoMap:
         events: List[Tuple[Any, Any, Any, float]] = []
         async with self._lock:
             for key in keys:
-                value = items[key]
-                self._purge_if_expired(key)
+                await self._purge_if_expired(key)
+            expires_at = self._current_time() + ttl if ttl is not None else None
+            await self._journal_append(
+                "put_many",
+                {
+                    "items": [(key, items[key]) for key in keys],
+                    "timestamp": ts,
+                    "expires_at": expires_at,
+                },
+            )
 
+            for key in keys:
+                value = items[key]
                 old_value = None
                 if key in self._store and self._store[key]:
                     old_value = self._store[key][-1][1]
@@ -392,14 +672,15 @@ class AsyncChronoMap:
                     idx = insertion_point(versions, ts)
                     versions.insert(idx, (ts, value))
 
-                if ttl is not None:
-                    self._ttl[key] = self._current_time() + ttl
+                if expires_at is not None:
+                    self._ttl[key] = expires_at
 
                 self._auto_prune(key)
                 if self._cache:
                     self._cache.invalidate(key)
                 events.append((key, old_value, value, ts))
 
+            await self._maybe_checkpoint()
             self._stats["writes"] += len(keys)
 
         for key, old_value, value, event_ts in events:
@@ -506,7 +787,7 @@ class AsyncChronoMap:
         value: Any = None
 
         async with self._lock:
-            self._purge_if_expired(key)
+            await self._purge_if_expired(key)
             versions = self._store.get(key, [])
             if versions:
                 self._stats["reads"] += 1
@@ -517,20 +798,31 @@ class AsyncChronoMap:
             value = await value
 
         async with self._lock:
-            self._purge_if_expired(key)
+            await self._purge_if_expired(key)
             versions = self._store.get(key, [])
             if versions:
                 self._stats["reads"] += 1
                 return versions[-1][1]
 
             ts = self._current_time()
+            expires_at = self._current_time() + ttl if ttl is not None else None
+            await self._journal_append(
+                "put",
+                {
+                    "key": key,
+                    "value": value,
+                    "timestamp": ts,
+                    "expires_at": expires_at,
+                },
+            )
             self._store[key] = [(ts, value)]
-            if ttl is not None:
-                self._ttl[key] = self._current_time() + ttl
+            if expires_at is not None:
+                self._ttl[key] = expires_at
 
             self._auto_prune(key)
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             self._stats["writes"] += 1
 
         await self._fire_callbacks(key, None, value, ts)
@@ -549,22 +841,29 @@ class AsyncChronoMap:
         created = False
 
         async with self._lock:
-            if self._is_expired(key):
-                self._store.pop(key, None)
-                self._ttl.pop(key, None)
-                if self._cache:
-                    self._cache.invalidate(key)
+            await self._purge_if_expired(key)
 
             versions = self._store.get(key, [])
             if versions:
                 self._stats["reads"] += 1
                 return versions[-1][1]
 
+            expires_at = self._current_time() + ttl if ttl is not None else None
+            await self._journal_append(
+                "put",
+                {
+                    "key": key,
+                    "value": default,
+                    "timestamp": ts,
+                    "expires_at": expires_at,
+                },
+            )
             self._store[key] = [(ts, default)]
-            if ttl is not None:
-                self._ttl[key] = self._current_time() + ttl
+            if expires_at is not None:
+                self._ttl[key] = expires_at
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             self._stats["writes"] += 1
             created = True
 
@@ -577,17 +876,19 @@ class AsyncChronoMap:
         self._validate_key(key)
         async with self._lock:
             if self._is_expired(key):
-                self._purge_if_expired(key)
+                await self._purge_if_expired(key)
             found, value = self._lookup_unlocked(key, self._current_time())
             if not found:
                 if default is _MISSING:
                     raise ChronoMapKeyError(key)
                 return default
 
+            await self._journal_append("delete", {"key": key})
             del self._store[key]
             self._ttl.pop(key, None)
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             self._stats["deletes"] += 1
             return value
 
@@ -596,17 +897,19 @@ class AsyncChronoMap:
         async with self._lock:
             for key in reversed(list(self._store)):
                 if self._is_expired(key):
-                    self._purge_if_expired(key)
+                    await self._purge_if_expired(key)
                     continue
                 versions = self._store.get(key, [])
                 if not versions:
                     continue
 
                 value = versions[-1][1]
+                await self._journal_append("delete", {"key": key})
                 del self._store[key]
                 self._ttl.pop(key, None)
                 if self._cache:
                     self._cache.invalidate(key)
+                await self._maybe_checkpoint()
                 self._stats["deletes"] += 1
                 return key, value
 
@@ -619,13 +922,15 @@ class AsyncChronoMap:
             if key not in self._store:
                 return False
             if self._is_expired(key):
-                self._purge_if_expired(key)
+                await self._purge_if_expired(key)
                 return False
 
+            await self._journal_append("delete", {"key": key})
             del self._store[key]
             self._ttl.pop(key, None)
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             self._stats["deletes"] += 1
             return True
 
@@ -636,18 +941,27 @@ class AsyncChronoMap:
             self._validate_key(key)
         count = 0
         async with self._lock:
+            live_keys: List[Any] = []
             for key in keys:
                 if key not in self._store:
                     continue
                 if self._is_expired(key):
-                    self._purge_if_expired(key)
+                    await self._purge_if_expired(key)
                     continue
+                live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            if live_keys:
+                await self._journal_append("delete_many", {"keys": live_keys})
+
+            for key in live_keys:
                 del self._store[key]
                 self._ttl.pop(key, None)
                 if self._cache:
                     self._cache.invalidate(key)
                 count += 1
                 self._stats["deletes"] += 1
+            if count:
+                await self._maybe_checkpoint()
         return count
 
     async def persist(self, key: Any) -> bool:
@@ -655,14 +969,16 @@ class AsyncChronoMap:
         self._validate_key(key)
         async with self._lock:
             if self._is_expired(key):
-                self._purge_if_expired(key)
+                await self._purge_if_expired(key)
                 return False
             if key not in self._ttl:
                 return False
 
+            await self._journal_append("persist", {"key": key})
             del self._ttl[key]
             if self._cache:
                 self._cache.invalidate(key)
+            await self._maybe_checkpoint()
             return True
 
     # -- queries ------------------------------------------------------------
@@ -862,6 +1178,14 @@ class AsyncChronoMap:
             if key not in self._store:
                 return 0
 
+            cutoff = self._parse_timestamp(older_than) if older_than is not None else None
+            if cutoff is not None:
+                self._validate_timestamp(cutoff)
+            await self._journal_append(
+                "prune",
+                {"key": key, "keep_last": keep_last, "cutoff": cutoff},
+            )
+
             versions = self._store[key]
             original_count = len(versions)
             if keep_last is not None:
@@ -870,9 +1194,7 @@ class AsyncChronoMap:
                 else:
                     versions[:] = versions[-keep_last:]
 
-            if older_than is not None:
-                cutoff = self._parse_timestamp(older_than)
-                self._validate_timestamp(cutoff)
+            if cutoff is not None:
                 versions[:] = [(ts, value) for ts, value in versions if ts >= cutoff]
 
             if not versions:
@@ -882,6 +1204,8 @@ class AsyncChronoMap:
             removed = original_count - len(versions)
             if self._cache and removed:
                 self._cache.invalidate(key)
+            if removed:
+                await self._maybe_checkpoint()
             return removed
 
     async def prune_all_history(
@@ -899,11 +1223,15 @@ class AsyncChronoMap:
         """Sweep expired keys. Returns the number removed."""
         async with self._lock:
             expired_keys = [key for key in self._ttl if self._is_expired(key)]
+            if expired_keys:
+                await self._journal_append("delete_many", {"keys": expired_keys})
             for key in expired_keys:
                 self._store.pop(key, None)
                 del self._ttl[key]
                 if self._cache:
                     self._cache.invalidate(key)
+            if expired_keys:
+                await self._maybe_checkpoint()
         self.cleaned_count += len(expired_keys)
         return len(expired_keys)
 
@@ -933,10 +1261,21 @@ class AsyncChronoMap:
         if not isinstance(snapshot, AsyncChronoMap):
             raise ChronoMapTypeError("Expected AsyncChronoMap instance for rollback.")
         async with self._lock:
-            self._store = deepcopy(snapshot._store)
-            self._ttl = deepcopy(snapshot._ttl)
+            replacement_store = deepcopy(snapshot._store)
+            replacement_ttl = deepcopy(snapshot._ttl)
+            await self._journal_append(
+                "replace",
+                {
+                    "store": replacement_store,
+                    "ttl": replacement_ttl,
+                    "snapshot_time": snapshot._snapshot_time,
+                },
+            )
+            self._store = replacement_store
+            self._ttl = replacement_ttl
             if self._cache:
                 self._cache.clear()
+            await self._maybe_checkpoint()
 
     async def _visibility_snapshot(self) -> Tuple[Dict[Any, Any], Set[Any]]:
         live: Dict[Any, Any] = {}
@@ -995,6 +1334,14 @@ class AsyncChronoMap:
             other_ttl = deepcopy(other._ttl)
 
         async with self._lock:
+            await self._journal_append(
+                "merge",
+                {
+                    "other_store": other_store,
+                    "other_ttl": other_ttl,
+                    "strategy": strategy,
+                },
+            )
             if strategy == "timestamp":
                 for key, other_versions in other_store.items():
                     target_versions = self._store.get(key, [])
@@ -1017,14 +1364,17 @@ class AsyncChronoMap:
 
             if self._cache:
                 self._cache.clear()
+            await self._maybe_checkpoint()
 
     async def clear(self) -> None:
         """Remove everything."""
         async with self._lock:
+            await self._journal_append("clear", {})
             self._store.clear()
             self._ttl.clear()
             if self._cache:
                 self._cache.clear()
+            await self._maybe_checkpoint()
 
     # -- stats --------------------------------------------------------------
 
@@ -1042,6 +1392,10 @@ class AsyncChronoMap:
                 }
             )
         stats["ttl_cleanup_count"] = self.cleaned_count
+        if self._wal is not None:
+            stats["journal_path"] = str(self._wal.path)
+            stats["journal_bytes"] = self._wal.size
+            stats["journal_sequence"] = self._wal.sequence
         stats["total_keys"] = sum(1 for key in self._store if not self._is_expired(key))
         stats["total_versions"] = sum(len(versions) for versions in self._store.values())
         stats["expired_keys"] = sum(1 for key in self._ttl if self._is_expired(key))
@@ -1156,12 +1510,35 @@ class AsyncChronoMap:
         for key, versions in raw_store.items():
             if not isinstance(versions, (list, tuple)):
                 raise ChronoMapValueError(f"History for key {key!r} must be a sequence")
-            normalized = []
+            normalized: List[Tuple[float, Any]] = []
             for version in versions:
                 if not isinstance(version, (list, tuple)) or len(version) != 2:
                     raise ChronoMapValueError(f"Malformed version for key {key!r}: {version!r}")
-                normalized.append((version[0], version[1]))
+                timestamp = version[0]
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                    raise ChronoMapTypeError(f"Timestamp for key {key!r} must be numeric")
+                if not math.isfinite(timestamp):
+                    raise ChronoMapValueError(f"Timestamp for key {key!r} must be finite")
+                if normalized and timestamp < normalized[-1][0]:
+                    raise ChronoMapValueError(f"History for key {key!r} is not sorted")
+                normalized.append((float(timestamp), version[1]))
             normalized_store[key] = normalized
+
+        normalized_ttl: Dict[Any, float] = {}
+        for key, deadline in raw_ttl.items():
+            if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+                raise ChronoMapTypeError(f"TTL deadline for key {key!r} must be numeric")
+            if not math.isfinite(deadline):
+                raise ChronoMapValueError(f"TTL deadline for key {key!r} must be finite")
+            normalized_ttl[key] = float(deadline)
+
+        snapshot_time = payload.get("snapshot_time")
+        if snapshot_time is not None:
+            if isinstance(snapshot_time, bool) or not isinstance(snapshot_time, (int, float)):
+                raise ChronoMapTypeError("snapshot_time must be numeric or None")
+            if not math.isfinite(snapshot_time):
+                raise ChronoMapValueError("snapshot_time must be finite")
+            snapshot_time = float(snapshot_time)
 
         instance = cls(
             debug=debug,
@@ -1171,8 +1548,23 @@ class AsyncChronoMap:
             **kwargs,
         )
         instance._store = normalized_store
-        instance._ttl = dict(raw_ttl)
-        instance._snapshot_time = payload.get("snapshot_time")
+        instance._ttl = normalized_ttl
+        instance._snapshot_time = snapshot_time
+        if instance._wal is not None:
+            try:
+                instance._wal.append(
+                    "replace",
+                    {
+                        "store": instance._store,
+                        "ttl": instance._ttl,
+                        "snapshot_time": instance._snapshot_time,
+                        "restore_snapshot_time": True,
+                    },
+                )
+                instance._maybe_checkpoint_unlocked()
+            except BaseException:
+                instance._wal.close()
+                raise
         return instance
 
     async def save_json(self, file_path: Union[str, Path]) -> None:

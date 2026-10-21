@@ -419,11 +419,11 @@ Unregisters a key callback. Returns `True` if it was registered.
 
 #### `wal_path` journals
 
-Passing `wal_path` enables an append-only write-ahead log for the synchronous
-map. Every mutating operation is encoded as a CRC-checked record before the
-in-memory state changes. With the default `wal_sync=True`, each record is
-flushed and fsynced first. Reopening a map at the same path restores the store,
-TTL deadlines, and snapshot timestamp.
+Passing `wal_path` enables an append-only write-ahead log for either map
+implementation. Every mutating operation is encoded as a CRC-checked record
+before the in-memory state changes. With the default `wal_sync=True`, each
+record is flushed and fsynced first. Reopening a map at the same path restores
+the store, TTL deadlines, and snapshot timestamp.
 
 ```python
 cm = ChronoMap(wal_path="chronomap.wal")
@@ -432,6 +432,21 @@ cm.close()
 
 recovered = ChronoMap(wal_path="chronomap.wal")
 assert recovered.get("region") == "us-east"
+```
+
+The async map takes the same arguments. Journal I/O is moved to a worker
+thread so it does not block the event loop, while the map's `asyncio.Lock`
+keeps journal order consistent with in-memory mutations:
+
+```python
+async with AsyncChronoMap(wal_path="chronomap.wal") as cm:
+    await cm.put("region", "us-east")
+
+recovered = AsyncChronoMap(wal_path="chronomap.wal")
+try:
+    assert await recovered.get("region") == "us-east"
+finally:
+    await recovered.aclose()
 ```
 
 A torn final record is discarded during recovery. A complete record with a
@@ -451,8 +466,9 @@ logged and leave the journal intact rather than failing the user write.
 cm.checkpoint()
 ```
 
-Calling `checkpoint()` without `wal_path`, or after the map is closed, raises
-`JournalError` before writing a checkpoint.
+Calling `checkpoint()` (or `await cm.checkpoint()` on the async map) without
+`wal_path`, or after the map is closed, raises `JournalError` before writing a
+checkpoint.
 
 #### `close()`
 
@@ -464,10 +480,17 @@ with ChronoMap(wal_path="chronomap.wal") as cm:
     cm.put("region", "us-east")
 ```
 
-`close()` is idempotent. The WAL is designed for one live map per file; it does
-not take a cross-process lock. `AsyncChronoMap` does not support WAL mode yet.
-`from_dict(..., wal_path=...)` logs the imported state as a replacement record
-so the imported map survives a later recovery.
+The async map uses `await cm.aclose()` and supports `async with`. Both are
+idempotent:
+
+```python
+async with AsyncChronoMap(wal_path="chronomap.wal") as cm:
+    await cm.put("region", "us-east")
+```
+
+The WAL is designed for one live map per file; it does not take a cross-process
+lock. `from_dict(..., wal_path=...)` logs the imported state as a replacement
+record so the imported map survives a later recovery for both implementations.
 
 ### Persistence
 
@@ -706,16 +729,39 @@ payloads; `CodecError` covers values the JSON codec cannot represent.
 `asyncio.Lock` and must be used from one event loop.
 
 ```python
+AsyncChronoMap(
+    debug=False,
+    max_history=None,
+    cache_size=1000,
+    enable_ttl_cleanup=False,
+    ttl_cleanup_interval=60.0,
+    wal_path=None,
+    wal_sync=True,
+    wal_auto_checkpoint_bytes=64 * 1024 * 1024,
+)
+```
+
+`wal_path`, `wal_sync`, and `wal_auto_checkpoint_bytes` have the same meaning
+as on `ChronoMap`, including CRC-checked records, torn-tail recovery, atomic
+checkpoints, and replacement logging from `from_dict()`. Replay runs
+synchronously during construction; journal appends and checkpoints are then
+offloaded to a worker thread. See [Durability](#durability).
+
+```python
 import asyncio
 from chronomap import AsyncChronoMap
 
 
 async def main():
-    cm = AsyncChronoMap(max_history=100)
-    await cm.put("cpu", 0.4)
-    await cm.put("cpu", 0.9)
-    assert await cm.get("cpu") == 0.9
-    assert await cm.keys() == ["cpu"]
+    cm = AsyncChronoMap(max_history=100, wal_path="chronomap.wal")
+    try:
+        await cm.put("cpu", 0.4)
+        await cm.put("cpu", 0.9)
+        await cm.checkpoint()
+        assert await cm.get("cpu") == 0.9
+        assert await cm.keys() == ["cpu"]
+    finally:
+        await cm.aclose()
 
 
 asyncio.run(main())
@@ -731,16 +777,24 @@ Available methods:
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
 | `await delete(key)` | Remove a key. |
-| `await snapshot()` | Deep-copy the map. |
+| `await snapshot()` / `await rollback(snapshot)` | Deep-copy or restore state. |
 | `await keys()` | List non-expired keys. |
 | `await latest()` | Dict of latest values. |
 | `await keys_with_history_count()` | Dict of version counts. |
+| `await get_range(...)`, `await history(...)` | Range and history reads. |
+| `await diff(other)` / `await diff_detailed(other)` | Compare two maps. |
+| `await merge(other, strategy="timestamp")` | Merge histories. |
+| `await save_json()` / `save_pickle()` and loaders | File persistence. |
+| `async for row in iter_rows()` / `await to_dataframe()` | Stream or tabulate versions. |
+| `await checkpoint()` | Write a WAL checkpoint and truncate the journal. |
+| `await aclose()` | Cancel cleanup and close the journal. |
 | `on_change(callback)` | Register a sync or async callback. |
 | `subscribe(key, callback)` / `unsubscribe(key, callback)` | Per-key callbacks. |
 | `get_stats()` | Return a copy of the counters. |
 
-The async map does not implement time-range queries, diff/merge, or file
-persistence. Use the synchronous map for those operations.
+The async map mirrors the synchronous surface for history, range queries,
+diff/merge, snapshots, and JSON/pickle persistence. It does not expose the
+synchronous thread-oriented lock/memory options or the archive CLI helpers.
 
 ## SnapshotContext
 
