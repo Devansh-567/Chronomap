@@ -14,7 +14,6 @@ the locking rules, and those rules are not interchangeable.
 from __future__ import annotations
 
 import asyncio
-import bisect
 import bz2
 import contextlib
 import gzip
@@ -35,6 +34,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterable, List, Optional,
 
 from ._cache import LRUCache
 from ._version import __version__
+from ._versionlog import insertion_point, range_versions, value_at
 from .exceptions import (
     ChronoMapKeyError,
     ChronoMapTypeError,
@@ -256,11 +256,7 @@ class AsyncChronoMap:
         versions = self._store.get(key, [])
         if not versions:
             return False, None
-        times = [v[0] for v in versions]
-        idx = bisect.bisect_right(times, ts) - 1
-        if idx < 0:
-            return False, None
-        return True, versions[idx][1]
+        return value_at(versions, ts)
 
     def _auto_prune(self, key: Any) -> None:
         if self._max_history is None:
@@ -268,7 +264,7 @@ class AsyncChronoMap:
         versions = self._store.get(key, [])
         if len(versions) > self._max_history:
             removed = len(versions) - self._max_history
-            self._store[key] = versions[-self._max_history :]
+            del versions[:removed]
             self._stats["auto_prunes"] += 1
             if self._cache:
                 self._cache.invalidate(key)
@@ -351,8 +347,7 @@ class AsyncChronoMap:
             if not versions or ts >= versions[-1][0]:
                 versions.append((ts, value))
             else:
-                times = [v[0] for v in versions]
-                idx = bisect.bisect_right(times, ts)
+                idx = insertion_point(versions, ts)
                 versions.insert(idx, (ts, value))
 
             if ttl is not None:
@@ -394,8 +389,7 @@ class AsyncChronoMap:
                 if not versions or ts >= versions[-1][0]:
                     versions.append((ts, value))
                 else:
-                    times = [v[0] for v in versions]
-                    idx = bisect.bisect_right(times, ts)
+                    idx = insertion_point(versions, ts)
                     versions.insert(idx, (ts, value))
 
                 if ttl is not None:
@@ -769,7 +763,7 @@ class AsyncChronoMap:
                 self._validate_timestamp(end)
             if start > end:
                 return []
-            return [(ts, value) for ts, value in versions if start <= ts <= end]
+            return range_versions(versions, start, end)
 
     async def get_latest_keys(self, n: int) -> List[Tuple[Any, float, Any]]:
         """The n most recently written (key, timestamp, value) triples."""
@@ -785,8 +779,7 @@ class AsyncChronoMap:
                 if versions:
                     ts, value = versions[-1]
                     latest_items.append((key, ts, value))
-        latest_items.sort(key=lambda item: item[1], reverse=True)
-        return latest_items[:n]
+        return heapq.nlargest(n, latest_items, key=lambda item: item[1])
 
     async def get_keys_by_value(
         self, value: Any, timestamp: Optional[Union[float, str, datetime]] = None

@@ -6,5 +6,5 @@
 
 from .cli import main
 
-if __name__ == "__main__":
-    raise SystemExit(main())  # pragma: no cover - exercised via subprocess
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
+    raise SystemExit(main())
