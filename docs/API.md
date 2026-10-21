@@ -882,6 +882,14 @@ and exposes `sequence`, `records`, `size`, and `closed` (plus `reset()`,
 `reset()` atomically replaces the journal with a fresh header while retaining
 the sequence counter. Each live `Journal` holds an OS-backed advisory lock on
 `<path>.lock`; a second journal on the same path raises `JournalLockError`.
+
+Recovery-oriented callers can pass `retain_records=False` with a
+`record_consumer(sequence, operation, data)` callback; records are then
+validated, delivered, and released one at a time instead of being retained in
+`records`. `skip_through=N` suppresses consumer delivery for records already
+covered by a checkpoint while still validating sequence ordering. Both maps
+use this streaming recovery path.
+
 Most applications should pass `wal_path` to `ChronoMap` instead of using
 `Journal` directly. Checkpoint helpers (`write_checkpoint()` /
 `read_checkpoint()`) are internal modules.

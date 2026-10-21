@@ -170,6 +170,19 @@ def test_wal_recovers_torn_tail_and_rejects_corruption(tmp_path):
 
 
 @pytest.mark.persistence
+def test_wal_replay_failure_releases_the_journal_lock(tmp_path):
+    path = tmp_path / "state.wal"
+    journal = Journal(path)
+    journal.append("unknown", {})
+    journal.close()
+
+    with pytest.raises(JournalCorruptionError):
+        open_map(path)
+    with pytest.raises(JournalCorruptionError):
+        open_map(path)
+
+
+@pytest.mark.persistence
 def test_wal_rejects_bad_checkpoint(tmp_path):
     path = tmp_path / "state.wal"
     bad_sequence = tmp_path / "state.wal.checkpoint"
@@ -401,7 +414,6 @@ def test_checkpoint_requires_a_journal(tmp_path):
         cm._journal_checkpoint_path()
     with pytest.raises(JournalError):
         cm._checkpoint_unlocked()
-    cm._replay_journal()
 
 
 @pytest.mark.persistence

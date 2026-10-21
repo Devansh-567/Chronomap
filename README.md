@@ -76,8 +76,10 @@ assert recovered.get("retries") == 3
 
 Records are flushed and fsynced before the in-memory mutation by default
 (`wal_sync=True`). Journals compact into an atomic checkpoint automatically
-at 64 MiB, or whenever you call `cm.checkpoint()`. `AsyncChronoMap` accepts the
-same options; use `async with` or `await cm.aclose()` to close its journal.
+at 64 MiB, or whenever you call `cm.checkpoint()`. Recovery streams records
+through a consumer instead of buffering the whole journal. `AsyncChronoMap`
+accepts the same options; use `async with` or `await cm.aclose()` to close its
+journal.
 
 ## Documentation
 

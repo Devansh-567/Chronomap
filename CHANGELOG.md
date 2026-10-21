@@ -28,6 +28,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `await aclose()`, and `async with` lifecycle support. Async `from_dict()`
   now validates version timestamps, sorted histories, TTL deadlines, and
   `snapshot_time` like the synchronous implementation.
+- **Streaming WAL recovery.** Journal reopening can now pass
+  `retain_records=False`, `skip_through=checkpoint_sequence`, and a
+  `record_consumer`; records are validated and applied one at a time instead
+  of being accumulated in `Journal.records`. Both `ChronoMap` and
+  `AsyncChronoMap` use this path, so recovery memory is bounded by the
+  restored state plus a single record. Records covered by a checkpoint are
+  still validated and sequenced but are not delivered to the consumer.
 - **Cross-process WAL ownership.** A `Journal` now holds an exclusive,
   OS-backed advisory lock on `<wal_path>.lock` for its lifetime, so a second
   live map on the same path raises `JournalLockError` instead of interleaving

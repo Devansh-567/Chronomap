@@ -54,7 +54,7 @@ Run with the coverage report used by CI:
 pytest tests/ --cov=chronomap --cov-report=term-missing
 ```
 
-The current `main` branch collects **842 tests** and reports **100% statement
+The current `main` branch collects **847 tests** and reports **100% statement
 coverage**. The numbers will grow as features are added; the expectation is
 that new behavior comes with tests and does not lower coverage.
 
@@ -92,7 +92,7 @@ pytest tests/test_basic.py::test_time_travel -vv
 | `tests/test_cli_commands.py` | Expanded CLI commands: show/get/history/put/delete/keys/stats/prune/diff/merge, JSON output, and file handling. |
 | `tests/test_persistence.py` | Archive formats, typed JSON codec, pickle, compression, inspection, TTL preservation, and corruption handling. |
 | `tests/test_query.py` | Fluent value queries, version queries, filters, reducers, and time-travel semantics. |
-| `tests/test_journal.py` | WAL framing, CRC validation, torn writes, sequence ordering, checkpoints, and directory fsync helpers. |
+| `tests/test_journal.py` | WAL framing, CRC validation, torn writes, sequence ordering, streaming record consumers, checkpoint skipping, checkpoints, and directory fsync helpers. |
 | `tests/test_wal.py` | `ChronoMap` WAL integration: replay of every mutation, checkpoints, TTL recovery, corruption handling, close/context management, and `from_dict()` imports. |
 | `tests/test_wal_crash.py` | Subprocess writers that call `os._exit()` immediately after a write and after a checkpoint, then verify recovery. |
 | `tests/test_wal_lock.py` | Cross-process WAL ownership: sync/async contention, checkpoint-safe locks, subprocess holders, crash release, and failed-open cleanup. |
@@ -118,7 +118,7 @@ and makes ordering irrelevant.
 | `snapshot` | Snapshot, rollback, and diff | 23 |
 | `async_map` | `AsyncChronoMap` behavior | 176 |
 | `cli` | CLI behavior | 81 |
-| `persistence` | Archive, codec, and WAL behavior | 181 |
+| `persistence` | Archive, codec, and WAL behavior | 186 |
 | `query` | Fluent value and version queries | 73 |
 
 These are selection sizes, not a partition: markers drive the CI subsystem

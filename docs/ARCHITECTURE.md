@@ -381,10 +381,13 @@ I/O to the default executor while that lock is held.
 `checkpoint()` serializes a deep copy of the store and TTL table to
 `<wal_path>.checkpoint`, writes a length + CRC32 frame, fsyncs a temporary
 file, atomically replaces the destination, then resets the journal while
-retaining its sequence counter. Recovery loads the checkpoint, replays only
-records with higher sequence numbers, and sets the next sequence above the
-checkpoint. A crash between checkpoint replacement and journal reset is
-therefore safe: the stale journal tail is skipped. The journal reset itself
+retaining its sequence counter. Recovery loads the checkpoint, streams journal
+records one at a time through a consumer, applies only records with higher
+sequence numbers, and sets the next sequence above the checkpoint. Records are
+released after replay instead of being accumulated in memory, so startup
+memory is bounded by the restored map plus one journal record. A crash between
+checkpoint replacement and journal reset is therefore safe: the stale journal
+tail is validated and skipped. The journal reset itself
 uses a temporary header plus atomic rename, so a crash can only leave the
 checkpoint with either the old journal tail or a fresh empty journal.
 Automatic checkpoints default to every 64 MiB of journal and never turn a
@@ -470,7 +473,6 @@ and type checking alongside the tests.
 - The async implementation has a smaller API surface than the sync map.
 - Async WAL replay runs synchronously during construction; a very large
   journal blocks the event loop until replay finishes.
-- WAL recovery loads all journal records into memory before applying them.
 - WAL checkpoints rewrite the whole store and TTL table.
 - WAL ownership uses an advisory file lock; it depends on the filesystem's
   locking support and is not distributed coordination.
