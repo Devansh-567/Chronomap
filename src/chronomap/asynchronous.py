@@ -365,6 +365,17 @@ class AsyncChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "expire":
+            key = data["key"]
+            expires_at = data["expires_at"]
+            if (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                raise JournalCorruptionError("Journal contains an invalid expiration deadline")
+            if key in self._store:
+                self._ttl[key] = float(expires_at)
         elif operation == "prune":
             key = data["key"]
             versions = self._store.get(key)
@@ -911,6 +922,34 @@ class AsyncChronoMap:
             self._stats["deletes"] += 1
             return value
 
+    async def pop_many(self, keys: Iterable[Any]) -> Dict[Any, Any]:
+        """Remove several keys under one lock and return their latest live values."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        async with self._lock:
+            live_keys: List[Any] = []
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    await self._purge_if_expired(key)
+                    continue
+                live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            result = {key: self._store[key][-1][1] for key in live_keys}
+            if live_keys:
+                await self._journal_append("delete_many", {"keys": live_keys})
+            for key in live_keys:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                self._stats["deletes"] += 1
+            if live_keys:
+                await self._maybe_checkpoint()
+            return result
+
     async def popitem(self) -> Tuple[Any, Any]:
         """Remove and return the most recently inserted live key/value pair."""
         async with self._lock:
@@ -1268,6 +1307,22 @@ class AsyncChronoMap:
         self.cleaned_count += len(expired_keys)
         return len(expired_keys)
 
+    async def expire(self, key: Any, ttl: float) -> bool:
+        """Set or replace a key's TTL. Returns False if the key is not live."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        async with self._lock:
+            await self._purge_if_expired(key)
+            if key not in self._store or not self._store[key]:
+                return False
+            expires_at = self._current_time() + ttl
+            await self._journal_append("expire", {"key": key, "expires_at": expires_at})
+            self._ttl[key] = expires_at
+            if self._cache:
+                self._cache.invalidate(key)
+            await self._maybe_checkpoint()
+            return True
+
     # -- snapshots and merging ---------------------------------------------
 
     async def snapshot(self) -> "AsyncChronoMap":
@@ -1447,6 +1502,12 @@ class AsyncChronoMap:
         if self._cache:
             self._cache.clear()
         self.cleaned_count = 0
+
+    def __repr__(self) -> str:
+        non_expired = [key for key in self._store if not self._is_expired(key)]
+        preview = non_expired[:10]
+        suffix = "..." if len(non_expired) > 10 else ""
+        return f"AsyncChronoMap(keys={preview}{suffix})"
 
     @property
     def snapshot_time(self) -> Optional[float]:

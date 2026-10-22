@@ -304,6 +304,17 @@ class ChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "expire":
+            key = data["key"]
+            expires_at = data["expires_at"]
+            if (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                raise JournalCorruptionError("Journal contains an invalid expiration deadline")
+            if key in self._store:
+                self._ttl[key] = float(expires_at)
         elif operation == "prune":
             key = data["key"]
             versions = self._store.get(key)
@@ -853,6 +864,38 @@ class ChronoMap:
             self._stats["deletes"] += 1
             logger.debug("POP key=%r value=%r", key, value)
             return value
+        finally:
+            self._release_write()
+
+    def pop_many(self, keys: Iterable[Any]) -> Dict[Any, Any]:
+        """Remove several keys under one lock and return their latest live values."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        self._acquire_write()
+        try:
+            live_keys: List[Any] = []
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    self._purge_if_expired(key)
+                    continue
+                live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            result = {key: self._store[key][-1][1] for key in live_keys}
+            if live_keys:
+                self._journal_append("delete_many", {"keys": live_keys})
+            for key in live_keys:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                self._stats["deletes"] += 1
+            if live_keys:
+                self._maybe_checkpoint()
+            logger.debug("POP_MANY %d/%d keys", len(live_keys), len(keys))
+            return result
         finally:
             self._release_write()
 
@@ -1467,6 +1510,25 @@ class ChronoMap:
         finally:
             self._release_write()
 
+    def expire(self, key: Any, ttl: float) -> bool:
+        """Set or replace a key's TTL. Returns False if the key is not live."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        self._acquire_write()
+        try:
+            self._purge_if_expired(key)
+            if key not in self._store or not self._store[key]:
+                return False
+            expires_at = self._current_time() + ttl
+            self._journal_append("expire", {"key": key, "expires_at": expires_at})
+            self._ttl[key] = expires_at
+            if self._cache:
+                self._cache.invalidate(key)
+            self._maybe_checkpoint()
+            return True
+        finally:
+            self._release_write()
+
     def get_stats(self) -> Dict[str, Any]:
         """Operation counters, cache stats, and size info."""
         stats: Dict[str, Any] = self._stats.copy()
@@ -1756,7 +1818,9 @@ class ChronoMap:
                 raise ChronoMapValueError("snapshot_time must be finite")
             snapshot_time = float(snapshot_time)
 
-        instance = cls(debug=debug, use_rwlock=use_rwlock, max_history=payload.get("max_history"), **kwargs)
+        options = dict(kwargs)
+        options.setdefault("max_history", payload.get("max_history"))
+        instance = cls(debug=debug, use_rwlock=use_rwlock, **options)
         instance._store = normalized_store
         instance._ttl = normalized_ttl
         instance._snapshot_time = snapshot_time

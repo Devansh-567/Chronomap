@@ -40,7 +40,7 @@ python -c "import chronomap; print(chronomap.__version__)"
 ```
 
 The project supports Python 3.8 and newer. CI runs the full suite on 3.8
-through 3.13 on Linux, plus Python 3.12 on Windows and macOS.
+through 3.14 on Linux, plus Python 3.12 on Windows and macOS.
 
 ## Run the suite
 
@@ -262,7 +262,7 @@ The workflow in `.github/workflows/tests.yml` has five jobs:
 1. **Detect changed subsystems**: maps changed paths to markers.
 2. **Subsystem tests**: runs only the selected marker groups on Python 3.12.
 3. **Full suite**: runs all tests with coverage on Python 3.8, 3.9, 3.10,
-   3.11, 3.12, and 3.13. The 3.12 run uploads `coverage.xml`.
+   3.11, 3.12, 3.13, and 3.14. The 3.12 run uploads `coverage.xml`.
 4. **Platform suite**: runs the complete suite with a 100% coverage gate on
    Windows and macOS with Python 3.12, exercising both WAL lock backends.
 5. **Formatting and type checking**: `black --check src/ tests/` is required;

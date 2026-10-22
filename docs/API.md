@@ -126,6 +126,16 @@ assert cm.get("missing", default="fallback") == "fallback"
 With `strict=True`, a missing key or a timestamp before the key's first
 version raises `ChronoMapKeyError`.
 
+#### `exists(key, timestamp=None)`
+
+Returns `True` when the key resolves to a live value at the timestamp. A stored
+`None` counts as present.
+
+```python
+cm.put("cpu", None)
+assert cm.exists("cpu") is True
+```
+
 #### `get_range(key, start_ts=None, end_ts=None)`
 
 Returns every `(timestamp, value)` pair for one key in the inclusive range.
@@ -223,6 +233,17 @@ Writes multiple keys under one lock acquisition.
 cm.put_many({"cpu": 0.4, "disk": 0.2}, timestamp=100)
 ```
 
+#### `pop_many(keys)`
+
+Removes several keys under one lock and returns a dictionary of their latest
+live values. Missing and expired keys are omitted. Duplicate keys are removed
+once.
+
+```python
+cm.put_many({"session:a": 1, "session:b": 2})
+assert cm.pop_many(["session:a", "session:b"]) == {"session:a": 1, "session:b": 2}
+```
+
 #### `get_or_set(key, default_factory, ttl=None)`
 
 Returns the current value if the key exists; otherwise calls
@@ -244,6 +265,56 @@ callable it is used as a factory.
 assert cm.get_or_default("region", "us-east") == "us-east"
 ```
 
+#### `update(other, timestamp=None, ttl=None)`
+
+Writes many key/value pairs from a mapping or an iterable of `(key, value)`
+pairs, using the same behavior as `put_many()`.
+
+```python
+cm.update({"cpu": 0.4, "disk": 0.2}, timestamp=100, ttl=60)
+```
+
+#### `setdefault(key, default=None, ttl=None)`
+
+Returns the latest value when the key is live, otherwise inserts `default` and
+returns it. A `ttl` applies only when the value is created.
+
+```python
+assert cm.setdefault("region", "us-east") == "us-east"
+```
+
+#### `pop(key, default=...)` and `popitem()`
+
+`pop()` returns the latest value and removes the key. Without a default it
+raises `ChronoMapKeyError` when the key is missing. `popitem()` removes and
+returns the most recently inserted live key/value pair.
+
+```python
+assert cm.pop("region") == "us-east"
+assert cm.pop("region", None) is None
+key, value = cm.popitem()
+```
+
+#### `persist(key)`
+
+Removes a key's TTL without writing a new version, so the current value stops
+expiring. Returns `True` when a TTL was removed and `False` when the key has no
+TTL or is missing/expired.
+
+```python
+cm.put("session", {"user": 7}, ttl=3600)
+assert cm.persist("session") is True
+```
+
+#### `clean_expired_keys()`
+
+Sweeps expired keys immediately and returns the number removed. The optional
+background cleanup thread performs the same sweep automatically.
+
+```python
+removed = cm.clean_expired_keys()
+```
+
 #### `delete(key)` and `delete_many(keys)`
 
 `delete()` removes all versions for a key and returns `True` if it existed.
@@ -252,6 +323,17 @@ assert cm.get_or_default("region", "us-east") == "us-east"
 ```python
 assert cm.delete("cpu") is True
 assert cm.delete("cpu") is False
+```
+
+#### `expire(key, ttl)`
+
+Sets or replaces a key's TTL without writing a new version. Returns `True` when
+the key is live and `False` when it is missing or already expired. The TTL must
+be a positive finite number.
+
+```python
+cm.put("session", {"user": 7})
+assert cm.expire("session", 3600) is True
 ```
 
 #### `clear()`
@@ -800,10 +882,12 @@ Available methods:
 | --- | --- |
 | `await put(key, value, timestamp=None, ttl=None)` | Store a version. |
 | `await put_many(items, timestamp=None, ttl=None)` | Store several versions. |
+| `await pop_many(keys)` | Remove several keys and return their latest values. |
 | `await get(key, timestamp=None, default=None, *, strict=False)` | Read a version. |
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
 | `await ttl_remaining(key)` | Seconds until expiry, or `None` when absent or persistent. |
+| `await expire(key, ttl)` | Set or replace a live key's TTL. |
 | `await delete(key)` | Remove a key. |
 | `await snapshot()` / `await rollback(snapshot)` | Deep-copy or restore state. |
 | `await keys()` | List non-expired keys. |
@@ -820,6 +904,12 @@ Available methods:
 | `subscribe(key, callback)` / `unsubscribe(key, callback)` | Per-key callbacks. |
 | `get_stats()` | Return a copy of the counters. |
 | `await memory_usage()` | Approximate bytes held by histories and TTL metadata. |
+| `await exists(key, timestamp=None)` | Test whether a key resolves to a value. |
+| `await update(other, timestamp=None, ttl=None)` | Write several pairs from a mapping or iterable. |
+| `await setdefault(key, default=None, ttl=None)` | Read or create a value. |
+| `await pop(key, default=...)` / `await popitem()` | Remove and return values. |
+| `await persist(key)` | Remove a key's TTL. |
+| `await clean_expired_keys()` | Sweep expired keys and return the count. |
 
 The async map mirrors the synchronous surface for history, range queries,
 diff/merge, snapshots, memory guardrails, and JSON/pickle persistence. It does

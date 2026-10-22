@@ -15,9 +15,14 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: monthly-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
