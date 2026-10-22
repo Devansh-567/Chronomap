@@ -100,8 +100,11 @@ journal.
 - **Snapshots and rollback** - `snapshot()` / `rollback()`, or
   `with cm.snapshot_context(): ...` for automatic rollback when a block
   raises.
-- **TTL** - `put(key, value, ttl=3600)`; expired keys disappear from reads
-  and can also be swept by a background cleanup thread.
+- **TTL** - `put(key, value, ttl=3600)`; inspect with `ttl_remaining()`,
+  refresh with `expire()`, remove with `persist()`, and sweep with
+  `clean_expired_keys()` or the background cleanup thread.
+- **Batch operations** - `put_many()`, `get_many()`, `pop_many()`, and
+  `delete_many()` operate under a single lock acquisition.
 - **Queries** - `query()`, `aggregate()`, and `count()` take ordinary
   Python callables instead of a query language.
 - **Change hooks** - `on_change()` for global notifications and
@@ -120,7 +123,7 @@ journal.
 - **Version export** - stream every live version with `iter_rows()`, or build
   a pandas DataFrame with `to_dataframe()`.
 - **Async** - `AsyncChronoMap` is a separate asyncio-native implementation
-  for use inside event loops.
+  for use inside event loops, including TTL refresh and batch operations.
 - **CLI inspection** - `python -m chronomap.cli show state.json` prints a
   saved map's current state.
 
