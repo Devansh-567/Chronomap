@@ -155,7 +155,7 @@ object.
 ## Status
 
 The project has 800+ tests and 100% line coverage across the package.
-CI runs the suite on Python 3.8 through 3.13 on Linux, plus Windows and macOS,
+CI runs the suite on Python 3.8 through 3.14 on Linux, plus Windows and macOS,
 and checks formatting with `black`. Reproduce the coverage locally with:
 
 ```bash
