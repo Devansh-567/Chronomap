@@ -126,6 +126,16 @@ assert cm.get("missing", default="fallback") == "fallback"
 With `strict=True`, a missing key or a timestamp before the key's first
 version raises `ChronoMapKeyError`.
 
+#### `exists(key, timestamp=None)`
+
+Returns `True` when the key resolves to a live value at the timestamp. A stored
+`None` counts as present.
+
+```python
+cm.put("cpu", None)
+assert cm.exists("cpu") is True
+```
+
 #### `get_range(key, start_ts=None, end_ts=None)`
 
 Returns every `(timestamp, value)` pair for one key in the inclusive range.
@@ -231,6 +241,15 @@ callable it is used as a factory.
 
 ```python
 assert cm.get_or_default("region", "us-east") == "us-east"
+```
+
+#### `update(other, timestamp=None, ttl=None)`
+
+Writes many key/value pairs from a mapping or an iterable of `(key, value)`
+pairs, using the same behavior as `put_many()`.
+
+```python
+cm.update({"cpu": 0.4, "disk": 0.2}, timestamp=100, ttl=60)
 ```
 
 #### `setdefault(key, default=None, ttl=None)`
@@ -849,6 +868,8 @@ Available methods:
 | `subscribe(key, callback)` / `unsubscribe(key, callback)` | Per-key callbacks. |
 | `get_stats()` | Return a copy of the counters. |
 | `await memory_usage()` | Approximate bytes held by histories and TTL metadata. |
+| `await exists(key, timestamp=None)` | Test whether a key resolves to a value. |
+| `await update(other, timestamp=None, ttl=None)` | Write several pairs from a mapping or iterable. |
 | `await setdefault(key, default=None, ttl=None)` | Read or create a value. |
 | `await pop(key, default=...)` / `await popitem()` | Remove and return values. |
 | `await persist(key)` | Remove a key's TTL. |
