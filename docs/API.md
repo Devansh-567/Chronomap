@@ -222,6 +222,17 @@ Writes multiple keys under one lock acquisition.
 cm.put_many({"cpu": 0.4, "disk": 0.2}, timestamp=100)
 ```
 
+#### `pop_many(keys)`
+
+Removes several keys under one lock and returns a dictionary of their latest
+live values. Missing and expired keys are omitted. Duplicate keys are removed
+once.
+
+```python
+cm.put_many({"session:a": 1, "session:b": 2})
+assert cm.pop_many(["session:a", "session:b"]) == {"session:a": 1, "session:b": 2}
+```
+
 #### `get_or_set(key, default_factory, ttl=None)`
 
 Returns the current value if the key exists; otherwise calls
@@ -849,6 +860,7 @@ Available methods:
 | --- | --- |
 | `await put(key, value, timestamp=None, ttl=None)` | Store a version. |
 | `await put_many(items, timestamp=None, ttl=None)` | Store several versions. |
+| `await pop_many(keys)` | Remove several keys and return their latest values. |
 | `await get(key, timestamp=None, default=None, *, strict=False)` | Read a version. |
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
