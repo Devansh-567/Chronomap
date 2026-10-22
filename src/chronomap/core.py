@@ -315,6 +315,20 @@ class ChronoMap:
                 raise JournalCorruptionError("Journal contains an invalid expiration deadline")
             if key in self._store:
                 self._ttl[key] = float(expires_at)
+        elif operation == "expire_many":
+            keys = data["keys"]
+            expires_at = data["expires_at"]
+            if not isinstance(keys, (list, tuple)):
+                raise JournalCorruptionError("Journal contains invalid expiration keys")
+            if (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                raise JournalCorruptionError("Journal contains an invalid expiration deadline")
+            for key in keys:
+                if key in self._store:
+                    self._ttl[key] = float(expires_at)
         elif operation == "prune":
             key = data["key"]
             versions = self._store.get(key)
@@ -1529,6 +1543,34 @@ class ChronoMap:
                 self._cache.invalidate(key)
             self._maybe_checkpoint()
             return True
+        finally:
+            self._release_write()
+
+    def expire_many(self, keys: Iterable[Any], ttl: float) -> int:
+        """Set or replace the same TTL for several live keys. Returns the count."""
+        self._validate_ttl(ttl)
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        self._acquire_write()
+        try:
+            live_keys: List[Any] = []
+            for key in keys:
+                self._purge_if_expired(key)
+                if key in self._store and self._store[key]:
+                    live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            if not live_keys:
+                return 0
+
+            expires_at = self._current_time() + ttl
+            self._journal_append("expire_many", {"keys": live_keys, "expires_at": expires_at})
+            for key in live_keys:
+                self._ttl[key] = expires_at
+                if self._cache:
+                    self._cache.invalidate(key)
+            self._maybe_checkpoint()
+            return len(live_keys)
         finally:
             self._release_write()
 
