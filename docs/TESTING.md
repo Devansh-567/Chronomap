@@ -256,7 +256,7 @@ on the files you touch before opening a pull request.
 
 ## What CI runs
 
-The workflow in `.github/workflows/tests.yml` has six jobs:
+The test-related jobs in `.github/workflows/tests.yml` are:
 
 1. **Detect changed subsystems**: maps changed paths to markers.
 2. **Subsystem tests**: runs only the selected marker groups on Python 3.12.
