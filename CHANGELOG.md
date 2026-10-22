@@ -6,6 +6,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **TTL refresh and batch removal helpers.** `ttl_remaining()` reports the
+  remaining lifetime, `expire()` refreshes a live key's TTL without writing a
+  new version, and `pop_many()` removes several keys under one lock and returns
+  their latest values. Both map implementations expose the new methods.
+- **Readable async maps.** `AsyncChronoMap.__repr__` previews up to ten live
+  keys without requiring an await.
 - **Memory guardrails for `AsyncChronoMap`.** The async constructor now accepts
   `max_memory_mb` with the same 80% warning and 100% `ChronoMapMemoryError`
   behavior as the synchronous map. The check covers puts, batch writes,
@@ -81,7 +87,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   subsystem's tests as its own named check on a PR — e.g. a PR that
   only touches `_cache.py` shows a `Subsystem: cache` check, and
   untouched subsystems simply don't run. The full cross-version suite
-  (`test` job, Python 3.8–3.12) still always runs regardless, as the
+  (`test` job, Python 3.8–3.14) still always runs regardless, as the
   actual correctness gate — the subsystem jobs are for visibility and
   speed, not a replacement for it.
 - Copyright/license header on every file under `src/` and `tests/`:
@@ -126,6 +132,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `to_dataframe()` now builds on the same snapshot.
 
 ### Changed
+- **CI now covers Python 3.14 and fails on type errors.** The test matrix adds
+  3.14, mypy runs without `continue-on-error`, every test job has a timeout,
+  and the monthly release workflow is serialized to avoid overlapping runs.
 - **Time-travel lookups no longer allocate a timestamp list.** Point
   reads, out-of-order writes, snapshots, and version ranges now binary
   search the `(timestamp, value)` list directly through
@@ -154,6 +163,12 @@ read, 3.1 ms to 5.3 us per write with a 50k-entry cache, and 669 ms to
   filesystem behavior.
 
 ### Fixed
+- **`from_dict()` ignored explicit constructor options.** Explicit
+  `max_history` and `enable_ttl_cleanup` arguments now override serialized
+  metadata instead of colliding with it, for both map implementations.
+- **`put_many()` accepted non-mapping inputs.** Both implementations now
+  require a `Mapping` and reject duck-typed objects before validating keys or
+  writing anything.
 - **Compressed pickle loading could raise `UnicodeDecodeError`.** When a
   compressed payload happened to look like the start of a pickle, `load_pickle()`
   only caught `UnpicklingError` and `EOFError`; some gzip streams failed with a
