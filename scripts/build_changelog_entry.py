@@ -56,8 +56,8 @@ def fetch_merged_prs(repo: str, token: str, since: str, until: str) -> list[dict
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req) as resp:
             data = json.load(resp)
+            link = resp.headers.get("Link", "")
         prs.extend(data.get("items", []))
-        link = resp.headers.get("Link", "")
         next_url = None
         for part in link.split(","):
             if 'rel="next"' in part:
