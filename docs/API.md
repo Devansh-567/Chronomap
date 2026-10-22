@@ -225,6 +225,16 @@ cm.put("session", {"user": 7}, ttl=60)
 remaining = cm.ttl_remaining("session")  # between 0.0 and 60.0
 ```
 
+#### `ttl_remaining_many(keys)`
+
+Returns a `{key: remaining}` mapping computed from one consistent snapshot.
+Missing keys and persistent keys map to `None`; expired keys that have not been
+swept map to `0.0`. Repeated keys appear once.
+
+```python
+ttls = cm.ttl_remaining_many(["session", "cache", "missing"])
+```
+
 #### `put_many(items, timestamp=None, ttl=None)`
 
 Writes multiple keys under one lock acquisition.
@@ -912,6 +922,7 @@ Available methods:
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
 | `await ttl_remaining(key)` | Seconds until expiry, or `None` when absent or persistent. |
+| `await ttl_remaining_many(keys)` | Remaining TTLs for several keys from one snapshot. |
 | `await expire(key, ttl)` | Set or replace a live key's TTL. |
 | `await expire_many(keys, ttl)` | Set or replace TTLs for several live keys. |
 | `await delete(key)` | Remove a key. |

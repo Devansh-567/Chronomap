@@ -1103,6 +1103,28 @@ class AsyncChronoMap:
                 return None
             return max(0.0, deadline - self._current_time())
 
+    async def ttl_remaining_many(self, keys: Iterable[Any]) -> Dict[Any, Optional[float]]:
+        """Map each key to its remaining TTL, using one consistent snapshot.
+
+        Missing keys and keys without a TTL map to ``None``. An expired key
+        that has not been swept yet maps to ``0.0``.
+        """
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        async with self._lock:
+            now = self._current_time()
+            result: Dict[Any, Optional[float]] = {}
+            for key in keys:
+                if key in result:
+                    continue
+                deadline = self._ttl.get(key)
+                if key not in self._store or deadline is None:
+                    result[key] = None
+                else:
+                    result[key] = max(0.0, deadline - now)
+            return result
+
     # -- queries ------------------------------------------------------------
 
     async def query(
