@@ -1628,12 +1628,13 @@ class AsyncChronoMap:
                 raise ChronoMapValueError("snapshot_time must be finite")
             snapshot_time = float(snapshot_time)
 
+        options = dict(kwargs)
+        options.setdefault("max_history", payload.get("max_history"))
+        options.setdefault("enable_ttl_cleanup", False)
         instance = cls(
             debug=debug,
-            max_history=payload.get("max_history"),
             cache_size=cache_size,
-            enable_ttl_cleanup=False,
-            **kwargs,
+            **options,
         )
         instance._store = normalized_store
         instance._ttl = normalized_ttl
