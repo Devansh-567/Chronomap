@@ -304,6 +304,17 @@ class ChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "expire":
+            key = data["key"]
+            expires_at = data["expires_at"]
+            if (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                raise JournalCorruptionError("Journal contains an invalid expiration deadline")
+            if key in self._store:
+                self._ttl[key] = float(expires_at)
         elif operation == "prune":
             key = data["key"]
             versions = self._store.get(key)
@@ -1479,6 +1490,25 @@ class ChronoMap:
                 self._maybe_checkpoint()
             logger.debug("CLEAN_EXPIRED removed %d keys", len(expired_keys))
             return len(expired_keys)
+        finally:
+            self._release_write()
+
+    def expire(self, key: Any, ttl: float) -> bool:
+        """Set or replace a key's TTL. Returns False if the key is not live."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        self._acquire_write()
+        try:
+            self._purge_if_expired(key)
+            if key not in self._store or not self._store[key]:
+                return False
+            expires_at = self._current_time() + ttl
+            self._journal_append("expire", {"key": key, "expires_at": expires_at})
+            self._ttl[key] = expires_at
+            if self._cache:
+                self._cache.invalidate(key)
+            self._maybe_checkpoint()
+            return True
         finally:
             self._release_write()
 
