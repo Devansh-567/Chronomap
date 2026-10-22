@@ -304,6 +304,12 @@ class ChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "persist_many":
+            keys = data["keys"]
+            if not isinstance(keys, (list, tuple)):
+                raise JournalCorruptionError("Journal contains invalid persistence keys")
+            for key in keys:
+                self._ttl.pop(key, None)
         elif operation == "expire":
             key = data["key"]
             expires_at = data["expires_at"]
@@ -982,6 +988,36 @@ class ChronoMap:
             self._maybe_checkpoint()
             logger.debug("PERSIST key=%r", key)
             return True
+        finally:
+            self._release_write()
+
+    def persist_many(self, keys: Iterable[Any]) -> int:
+        """Remove TTLs from several live keys. Returns the number persisted."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        self._acquire_write()
+        try:
+            live_keys: List[Any] = []
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    self._purge_if_expired(key)
+                    continue
+                if key in self._ttl:
+                    live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            if not live_keys:
+                return 0
+
+            self._journal_append("persist_many", {"keys": live_keys})
+            for key in live_keys:
+                del self._ttl[key]
+                if self._cache:
+                    self._cache.invalidate(key)
+            self._maybe_checkpoint()
+            return len(live_keys)
         finally:
             self._release_write()
 

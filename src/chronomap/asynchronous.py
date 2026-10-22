@@ -365,6 +365,12 @@ class AsyncChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "persist_many":
+            keys = data["keys"]
+            if not isinstance(keys, (list, tuple)):
+                raise JournalCorruptionError("Journal contains invalid persistence keys")
+            for key in keys:
+                self._ttl.pop(key, None)
         elif operation == "expire":
             key = data["key"]
             expires_at = data["expires_at"]
@@ -1055,6 +1061,33 @@ class AsyncChronoMap:
                 self._cache.invalidate(key)
             await self._maybe_checkpoint()
             return True
+
+    async def persist_many(self, keys: Iterable[Any]) -> int:
+        """Remove TTLs from several live keys. Returns the number persisted."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        async with self._lock:
+            live_keys: List[Any] = []
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    await self._purge_if_expired(key)
+                    continue
+                if key in self._ttl:
+                    live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            if not live_keys:
+                return 0
+
+            await self._journal_append("persist_many", {"keys": live_keys})
+            for key in live_keys:
+                del self._ttl[key]
+                if self._cache:
+                    self._cache.invalidate(key)
+            await self._maybe_checkpoint()
+            return len(live_keys)
 
     async def ttl_remaining(self, key: Any) -> Optional[float]:
         """Seconds until `key` expires, or None if it is absent or has no TTL.

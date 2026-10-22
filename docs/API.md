@@ -308,6 +308,18 @@ cm.put("session", {"user": 7}, ttl=3600)
 assert cm.persist("session") is True
 ```
 
+#### `persist_many(keys)`
+
+Removes TTLs from several live keys under one lock. Keys without a TTL,
+missing keys, and expired keys are skipped; duplicates are applied once. The
+number of keys whose TTL was removed is returned.
+
+```python
+cm.put_many({"session:a": 1, "session:b": 2})
+cm.persist_many(["session:a", "session:b"])
+assert cm.ttl_remaining("session:a") is None
+```
+
 #### `clean_expired_keys()`
 
 Sweeps expired keys immediately and returns the number removed. The optional
@@ -923,6 +935,7 @@ Available methods:
 | `await setdefault(key, default=None, ttl=None)` | Read or create a value. |
 | `await pop(key, default=...)` / `await popitem(last=True)` | Remove and return values. |
 | `await persist(key)` | Remove a key's TTL. |
+| `await persist_many(keys)` | Remove TTLs from several live keys. |
 | `await clean_expired_keys()` | Sweep expired keys and return the count. |
 
 The async map mirrors the synchronous surface for history, range queries,
