@@ -67,6 +67,14 @@ assert "session:short" not in sessions
 A write to an expired key starts a fresh history, so a new value is not born
 already expired.
 
+Inspect the remaining lifetime with `ttl_remaining()` and refresh it with
+`expire()` without writing a new version:
+
+```python
+assert 0 < sessions.ttl_remaining("session:abc") <= 3600
+assert sessions.expire("session:abc", 7200) is True
+```
+
 For a production service, leave `enable_ttl_cleanup=True` (the default) so
 expired entries are swept periodically even if no one reads them.
 
