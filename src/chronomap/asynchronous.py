@@ -648,11 +648,13 @@ class AsyncChronoMap:
 
     async def put_many(
         self,
-        items: Dict[Any, Any],
+        items: Mapping[Any, Any],
         timestamp: Optional[Union[float, str, datetime]] = None,
         ttl: Optional[float] = None,
     ) -> None:
         """Insert multiple pairs under a single lock acquisition."""
+        if not isinstance(items, Mapping):
+            raise ChronoMapTypeError("put_many() requires a mapping")
         self._validate_ttl(ttl)
         ts = self._parse_timestamp(timestamp) if timestamp is not None else self._current_time()
         self._validate_timestamp(ts)
