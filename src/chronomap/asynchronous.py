@@ -365,6 +365,17 @@ class AsyncChronoMap:
                 self._ttl.pop(key, None)
         elif operation == "persist":
             self._ttl.pop(data["key"], None)
+        elif operation == "expire":
+            key = data["key"]
+            expires_at = data["expires_at"]
+            if (
+                isinstance(expires_at, bool)
+                or not isinstance(expires_at, (int, float))
+                or not math.isfinite(expires_at)
+            ):
+                raise JournalCorruptionError("Journal contains an invalid expiration deadline")
+            if key in self._store:
+                self._ttl[key] = float(expires_at)
         elif operation == "prune":
             key = data["key"]
             versions = self._store.get(key)
@@ -1253,6 +1264,22 @@ class AsyncChronoMap:
                 await self._maybe_checkpoint()
         self.cleaned_count += len(expired_keys)
         return len(expired_keys)
+
+    async def expire(self, key: Any, ttl: float) -> bool:
+        """Set or replace a key's TTL. Returns False if the key is not live."""
+        self._validate_key(key)
+        self._validate_ttl(ttl)
+        async with self._lock:
+            await self._purge_if_expired(key)
+            if key not in self._store or not self._store[key]:
+                return False
+            expires_at = self._current_time() + ttl
+            await self._journal_append("expire", {"key": key, "expires_at": expires_at})
+            self._ttl[key] = expires_at
+            if self._cache:
+                self._cache.invalidate(key)
+            await self._maybe_checkpoint()
+            return True
 
     # -- snapshots and merging ---------------------------------------------
 

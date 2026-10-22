@@ -243,6 +243,17 @@ assert cm.delete("cpu") is True
 assert cm.delete("cpu") is False
 ```
 
+#### `expire(key, ttl)`
+
+Sets or replaces a key's TTL without writing a new version. Returns `True` when
+the key is live and `False` when it is missing or already expired. The TTL must
+be a positive finite number.
+
+```python
+cm.put("session", {"user": 7})
+assert cm.expire("session", 3600) is True
+```
+
 #### `clear()`
 
 Removes all keys, TTL entries, history, and cached values.
@@ -792,6 +803,7 @@ Available methods:
 | `await get(key, timestamp=None, default=None, *, strict=False)` | Read a version. |
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
+| `await expire(key, ttl)` | Set or replace a live key's TTL. |
 | `await delete(key)` | Remove a key. |
 | `await snapshot()` / `await rollback(snapshot)` | Deep-copy or restore state. |
 | `await keys()` | List non-expired keys. |
