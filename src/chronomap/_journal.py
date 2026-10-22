@@ -52,7 +52,7 @@ def _acquire_os_lock(descriptor: int) -> None:
         import msvcrt
 
         os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
     else:  # pragma: no cover - exercised on POSIX CI
         import fcntl
 
@@ -64,7 +64,7 @@ def _release_os_lock(descriptor: int) -> None:
         import msvcrt
 
         os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
     else:  # pragma: no cover - exercised on POSIX CI
         import fcntl
 
