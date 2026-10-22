@@ -1434,6 +1434,12 @@ class AsyncChronoMap:
             self._cache.clear()
         self.cleaned_count = 0
 
+    def __repr__(self) -> str:
+        non_expired = [key for key in self._store if not self._is_expired(key)]
+        preview = non_expired[:10]
+        suffix = "..." if len(non_expired) > 10 else ""
+        return f"AsyncChronoMap(keys={preview}{suffix})"
+
     @property
     def snapshot_time(self) -> Optional[float]:
         """Timestamp recorded when this map was created by snapshot()."""
