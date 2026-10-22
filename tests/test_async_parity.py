@@ -15,6 +15,7 @@ import pickle
 import sys
 import weakref
 import zlib
+from collections.abc import Mapping
 from datetime import datetime
 
 import pytest
@@ -234,12 +235,18 @@ async def test_async_put_many_rejects_bad_ttl_before_writing():
 @pytest.mark.ttl
 @pytest.mark.asyncio
 async def test_async_put_many_validates_keys_before_writing():
-    class BadItems:
+    class BadItems(Mapping):
         def keys(self):
             return ["a", ["bad"]]
 
         def __getitem__(self, key):
             return key
+
+        def __iter__(self):
+            return iter(self.keys())
+
+        def __len__(self):
+            return len(self.keys())
 
     cm = AsyncChronoMap()
     with pytest.raises(ChronoMapTypeError):

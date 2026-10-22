@@ -13,6 +13,7 @@ that read a map without holding its lock.
 import math
 import threading
 import time
+from collections.abc import Mapping
 
 import pytest
 
@@ -133,12 +134,18 @@ def test_put_many_rejects_bad_ttl_before_writing_any_item():
 
 @pytest.mark.ttl
 def test_put_many_does_not_store_earlier_items_when_key_is_unhashable():
-    class BadItems:
+    class BadItems(Mapping):
         def keys(self):
             return ["a", ["bad"]]
 
         def __getitem__(self, key):
             return key
+
+        def __iter__(self):
+            return iter(self.keys())
+
+        def __len__(self):
+            return len(self.keys())
 
     cm = ChronoMap(enable_ttl_cleanup=False)
     with pytest.raises(ChronoMapTypeError):
