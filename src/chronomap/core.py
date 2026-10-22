@@ -1771,7 +1771,9 @@ class ChronoMap:
                 raise ChronoMapValueError("snapshot_time must be finite")
             snapshot_time = float(snapshot_time)
 
-        instance = cls(debug=debug, use_rwlock=use_rwlock, max_history=payload.get("max_history"), **kwargs)
+        options = dict(kwargs)
+        options.setdefault("max_history", payload.get("max_history"))
+        instance = cls(debug=debug, use_rwlock=use_rwlock, **options)
         instance._store = normalized_store
         instance._ttl = normalized_ttl
         instance._snapshot_time = snapshot_time
