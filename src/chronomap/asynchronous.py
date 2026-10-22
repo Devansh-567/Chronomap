@@ -911,6 +911,34 @@ class AsyncChronoMap:
             self._stats["deletes"] += 1
             return value
 
+    async def pop_many(self, keys: Iterable[Any]) -> Dict[Any, Any]:
+        """Remove several keys under one lock and return their latest live values."""
+        keys = list(keys)
+        for key in keys:
+            self._validate_key(key)
+        async with self._lock:
+            live_keys: List[Any] = []
+            for key in keys:
+                if key not in self._store:
+                    continue
+                if self._is_expired(key):
+                    await self._purge_if_expired(key)
+                    continue
+                live_keys.append(key)
+            live_keys = list(dict.fromkeys(live_keys))
+            result = {key: self._store[key][-1][1] for key in live_keys}
+            if live_keys:
+                await self._journal_append("delete_many", {"keys": live_keys})
+            for key in live_keys:
+                self._store.pop(key, None)
+                self._ttl.pop(key, None)
+                if self._cache:
+                    self._cache.invalidate(key)
+                self._stats["deletes"] += 1
+            if live_keys:
+                await self._maybe_checkpoint()
+            return result
+
     async def popitem(self) -> Tuple[Any, Any]:
         """Remove and return the most recently inserted live key/value pair."""
         async with self._lock:
