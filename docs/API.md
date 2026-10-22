@@ -136,6 +136,17 @@ cm.put("cpu", None)
 assert cm.exists("cpu") is True
 ```
 
+#### `get_many(keys, timestamp=None, *, strict=False)`
+
+Reads several keys at one timestamp under a single lock. Missing keys are
+omitted, or raise `ChronoMapKeyError` for the first missing key when
+`strict=True`.
+
+```python
+cm.put_many({"cpu": 0.4, "disk": 0.2})
+assert cm.get_many(["cpu", "disk"]) == {"cpu": 0.4, "disk": 0.2}
+```
+
 #### `get_range(key, start_ts=None, end_ts=None)`
 
 Returns every `(timestamp, value)` pair for one key in the inclusive range.
@@ -868,6 +879,7 @@ Available methods:
 | `subscribe(key, callback)` / `unsubscribe(key, callback)` | Per-key callbacks. |
 | `get_stats()` | Return a copy of the counters. |
 | `await memory_usage()` | Approximate bytes held by histories and TTL metadata. |
+| `await get_many(keys, timestamp=None, *, strict=False)` | Read several keys under one lock. |
 | `await exists(key, timestamp=None)` | Test whether a key resolves to a value. |
 | `await update(other, timestamp=None, ttl=None)` | Write several pairs from a mapping or iterable. |
 | `await setdefault(key, default=None, ttl=None)` | Read or create a value. |
