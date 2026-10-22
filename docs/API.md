@@ -336,6 +336,17 @@ cm.put("session", {"user": 7})
 assert cm.expire("session", 3600) is True
 ```
 
+#### `expire_many(keys, ttl)`
+
+Sets or replaces the same TTL for several live keys under one lock. Missing
+and expired keys are skipped, duplicates are applied once, and the number of
+live keys updated is returned.
+
+```python
+cm.put_many({"session:a": 1, "session:b": 2})
+assert cm.expire_many(["session:a", "session:b"], 7200) == 2
+```
+
 #### `clear()`
 
 Removes all keys, TTL entries, history, and cached values.
@@ -888,6 +899,7 @@ Available methods:
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
 | `await ttl_remaining(key)` | Seconds until expiry, or `None` when absent or persistent. |
 | `await expire(key, ttl)` | Set or replace a live key's TTL. |
+| `await expire_many(keys, ttl)` | Set or replace TTLs for several live keys. |
 | `await delete(key)` | Remove a key. |
 | `await snapshot()` / `await rollback(snapshot)` | Deep-copy or restore state. |
 | `await keys()` | List non-expired keys. |
