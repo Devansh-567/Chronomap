@@ -70,6 +70,21 @@ already expired.
 For a production service, leave `enable_ttl_cleanup=True` (the default) so
 expired entries are swept periodically even if no one reads them.
 
+To make an existing key permanent without writing a new version, call
+`persist()`:
+
+```python
+sessions.put("session:long-lived", {"user": 9}, ttl=60)
+assert sessions.persist("session:long-lived") is True
+```
+
+To sweep expired keys immediately — for example after a burst of short-lived
+writes — call `clean_expired_keys()`:
+
+```python
+removed = sessions.clean_expired_keys()
+```
+
 ## Roll back a group of writes
 
 Use `snapshot_context()` when several writes should either commit together or
