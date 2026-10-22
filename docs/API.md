@@ -214,6 +214,17 @@ cm.put("session", {"user": 8}, timestamp=500)
 `ttl` is measured from the write time, not from the supplied timestamp. A TTL
 must be positive; `ChronoMapValueError` is raised otherwise.
 
+#### `ttl_remaining(key)`
+
+Returns the number of seconds until the key expires. Returns `None` when the
+key is absent or has no TTL, and `0.0` for an expired key that has not been
+swept yet.
+
+```python
+cm.put("session", {"user": 7}, ttl=60)
+remaining = cm.ttl_remaining("session")  # between 0.0 and 60.0
+```
+
 #### `put_many(items, timestamp=None, ttl=None)`
 
 Writes multiple keys under one lock acquisition.
@@ -875,6 +886,7 @@ Available methods:
 | `await get(key, timestamp=None, default=None, *, strict=False)` | Read a version. |
 | `await get_or_set(key, default_factory, ttl=None)` | Read or create a value. |
 | `await get_or_default(key, default, ttl=None)` | Plain-value form of `get_or_set()`. |
+| `await ttl_remaining(key)` | Seconds until expiry, or `None` when absent or persistent. |
 | `await expire(key, ttl)` | Set or replace a live key's TTL. |
 | `await delete(key)` | Remove a key. |
 | `await snapshot()` / `await rollback(snapshot)` | Deep-copy or restore state. |

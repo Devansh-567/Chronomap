@@ -970,6 +970,23 @@ class ChronoMap:
         finally:
             self._release_write()
 
+    def ttl_remaining(self, key: Any) -> Optional[float]:
+        """Seconds until `key` expires, or None if it is absent or has no TTL.
+
+        An expired key that has not been swept yet returns ``0.0``.
+        """
+        self._validate_key(key)
+        self._acquire_read()
+        try:
+            if key not in self._store:
+                return None
+            deadline = self._ttl.get(key)
+            if deadline is None:
+                return None
+            return max(0.0, deadline - self._current_time())
+        finally:
+            self._release_read()
+
     # -- query & analytics --------------------------------------------------
 
     def query(
