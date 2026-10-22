@@ -67,8 +67,31 @@ assert "session:short" not in sessions
 A write to an expired key starts a fresh history, so a new value is not born
 already expired.
 
+Inspect the remaining lifetime with `ttl_remaining()` and refresh it with
+`expire()` without writing a new version:
+
+```python
+assert 0 < sessions.ttl_remaining("session:abc") <= 3600
+assert sessions.expire("session:abc", 7200) is True
+```
+
 For a production service, leave `enable_ttl_cleanup=True` (the default) so
 expired entries are swept periodically even if no one reads them.
+
+To make an existing key permanent without writing a new version, call
+`persist()`:
+
+```python
+sessions.put("session:long-lived", {"user": 9}, ttl=60)
+assert sessions.persist("session:long-lived") is True
+```
+
+To sweep expired keys immediately — for example after a burst of short-lived
+writes — call `clean_expired_keys()`:
+
+```python
+removed = sessions.clean_expired_keys()
+```
 
 ## Roll back a group of writes
 
