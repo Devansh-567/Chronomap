@@ -39,6 +39,18 @@ CATEGORY_LABELS = {
     "dependencies": "Maintenance",
 }
 CATEGORY_ORDER = ["Added", "Changed", "Fixed", "Documentation", "Maintenance"]
+CATEGORY_PRECEDENCE = [
+    "feature",
+    "enhancement",
+    "bug",
+    "fix",
+    "changed",
+    "refactor",
+    "documentation",
+    "chore",
+    "ci",
+    "dependencies",
+]
 
 MENTION_RE = re.compile(r"@[\w-]+")
 
@@ -68,8 +80,8 @@ def fetch_merged_prs(repo: str, token: str, since: str, until: str) -> list[dict
 
 def categorize(pr: dict) -> str:
     labels = {lbl["name"] for lbl in pr.get("labels", [])}
-    for label in labels:
-        if label in CATEGORY_LABELS:
+    for label in CATEGORY_PRECEDENCE:
+        if label in labels:
             return CATEGORY_LABELS[label]
     return "Changed"
 

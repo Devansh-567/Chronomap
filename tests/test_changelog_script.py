@@ -65,11 +65,12 @@ def test_fetch_merged_prs_reads_link_header_before_closing(monkeypatch):
     assert "page=2" in requested[1]
 
 
-def test_categorize_prefers_first_known_label():
+def test_categorize_uses_deterministic_label_precedence():
     module = _load_script()
 
     assert module.categorize({"labels": [{"name": "bug"}]}) == "Fixed"
     assert module.categorize({"labels": [{"name": "documentation"}]}) == "Documentation"
+    assert module.categorize({"labels": [{"name": "bug"}, {"name": "feature"}]}) == "Added"
     assert module.categorize({"labels": []}) == "Changed"
 
 
