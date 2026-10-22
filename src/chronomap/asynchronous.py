@@ -1000,6 +1000,20 @@ class AsyncChronoMap:
             await self._maybe_checkpoint()
             return True
 
+    async def ttl_remaining(self, key: Any) -> Optional[float]:
+        """Seconds until `key` expires, or None if it is absent or has no TTL.
+
+        An expired key that has not been swept yet returns ``0.0``.
+        """
+        self._validate_key(key)
+        async with self._lock:
+            if key not in self._store:
+                return None
+            deadline = self._ttl.get(key)
+            if deadline is None:
+                return None
+            return max(0.0, deadline - self._current_time())
+
     # -- queries ------------------------------------------------------------
 
     async def query(
