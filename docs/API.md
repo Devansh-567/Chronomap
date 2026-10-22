@@ -283,16 +283,18 @@ returns it. A `ttl` applies only when the value is created.
 assert cm.setdefault("region", "us-east") == "us-east"
 ```
 
-#### `pop(key, default=...)` and `popitem()`
+#### `pop(key, default=...)` and `popitem(last=True)`
 
 `pop()` returns the latest value and removes the key. Without a default it
 raises `ChronoMapKeyError` when the key is missing. `popitem()` removes and
-returns the most recently inserted live key/value pair.
+returns the most recently inserted live key/value pair; pass `last=False` to
+remove the oldest instead.
 
 ```python
 assert cm.pop("region") == "us-east"
 assert cm.pop("region", None) is None
-key, value = cm.popitem()
+newest_key, newest_value = cm.popitem()
+oldest_key, oldest_value = cm.popitem(last=False)
 ```
 
 #### `persist(key)`
@@ -907,7 +909,7 @@ Available methods:
 | `await exists(key, timestamp=None)` | Test whether a key resolves to a value. |
 | `await update(other, timestamp=None, ttl=None)` | Write several pairs from a mapping or iterable. |
 | `await setdefault(key, default=None, ttl=None)` | Read or create a value. |
-| `await pop(key, default=...)` / `await popitem()` | Remove and return values. |
+| `await pop(key, default=...)` / `await popitem(last=True)` | Remove and return values. |
 | `await persist(key)` | Remove a key's TTL. |
 | `await clean_expired_keys()` | Sweep expired keys and return the count. |
 

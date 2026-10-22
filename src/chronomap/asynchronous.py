@@ -952,10 +952,11 @@ class AsyncChronoMap:
                 await self._maybe_checkpoint()
             return result
 
-    async def popitem(self) -> Tuple[Any, Any]:
-        """Remove and return the most recently inserted live key/value pair."""
+    async def popitem(self, last: bool = True) -> Tuple[Any, Any]:
+        """Remove and return the newest live pair, or the oldest when ``last=False``."""
         async with self._lock:
-            for key in reversed(list(self._store)):
+            keys = reversed(list(self._store)) if last else list(self._store)
+            for key in keys:
                 if self._is_expired(key):
                     await self._purge_if_expired(key)
                     continue
